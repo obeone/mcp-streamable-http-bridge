@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 /**
  * @typedef {import('../types.js').ChildProcessWithoutNullStreams} ChildProcessWithoutNullStreams
  *
- * MCP stdio transport uses LSP-style Content-Length framing.
+ * MCP stdio transport: newline-delimited JSON (matches @modelcontextprotocol/sdk).
  */
 export class StdioJsonRpcTransport extends EventEmitter {
   /** @param {ChildProcessWithoutNullStreams} child */
@@ -44,9 +44,7 @@ export class StdioJsonRpcTransport extends EventEmitter {
 
   /** @param {object} obj */
   #writeMessage(obj) {
-    const body = JSON.stringify(obj);
-    const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-    this.child.stdin.write(header + body, 'utf8');
+    this.child.stdin.write(`${JSON.stringify(obj)}\n`, 'utf8');
   }
 
   /** @param {Buffer} chunk */
@@ -57,43 +55,41 @@ export class StdioJsonRpcTransport extends EventEmitter {
 
   #processBuffer() {
     while (true) {
-      const headerEnd = this.buffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return;
+      const newline = this.buffer.indexOf('\n');
+      if (newline === -1) return;
 
-      const headerText = this.buffer.subarray(0, headerEnd).toString('utf8');
-      const match = headerText.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        this.buffer = this.buffer.subarray(headerEnd + 4);
-        continue;
+      let line = this.buffer.subarray(0, newline).toString('utf8');
+      this.buffer = this.buffer.subarray(newline + 1);
+      if (line.endsWith('\r')) {
+        line = line.slice(0, -1);
       }
-
-      const contentLength = parseInt(match[1], 10);
-      const bodyStart = headerEnd + 4;
-      if (this.buffer.length < bodyStart + contentLength) return;
-
-      const body = this.buffer.subarray(bodyStart, bodyStart + contentLength).toString('utf8');
-      this.buffer = this.buffer.subarray(bodyStart + contentLength);
+      if (!line.trim()) continue;
 
       let msg;
       try {
-        msg = JSON.parse(body);
+        msg = JSON.parse(line);
       } catch {
         continue;
       }
 
-      if (msg.id !== undefined && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        if (msg.error) {
-          reject(Object.assign(new Error(msg.error.message || 'JSON-RPC error'), { rpcError: msg.error }));
-        } else {
-          resolve(msg);
-        }
-      } else if (msg.method && msg.id === undefined) {
-        this.emit('notification', msg);
-      } else if (msg.method && msg.id !== undefined) {
-        this.emit('request', msg);
+      this.#dispatchMessage(msg);
+    }
+  }
+
+  /** @param {object} msg */
+  #dispatchMessage(msg) {
+    if (msg.id !== undefined && this.pending.has(msg.id)) {
+      const { resolve, reject } = this.pending.get(msg.id);
+      this.pending.delete(msg.id);
+      if (msg.error) {
+        reject(Object.assign(new Error(msg.error.message || 'JSON-RPC error'), { rpcError: msg.error }));
+      } else {
+        resolve(msg);
       }
+    } else if (msg.method && msg.id === undefined) {
+      this.emit('notification', msg);
+    } else if (msg.method && msg.id !== undefined) {
+      this.emit('request', msg);
     }
   }
 
@@ -116,7 +112,6 @@ export class StdioJsonRpcTransport extends EventEmitter {
    * @param {object} obj
    */
   static encodeMessage(obj) {
-    const body = JSON.stringify(obj);
-    return `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`;
+    return `${JSON.stringify(obj)}\n`;
   }
 }

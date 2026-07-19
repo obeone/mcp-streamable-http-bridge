@@ -4,9 +4,9 @@ import { spawn } from 'node:child_process';
 import { StdioJsonRpcTransport } from '../../src/managers/StdioJsonRpcTransport.js';
 
 describe('StdioJsonRpcTransport', () => {
-  it('encodeMessage produces Content-Length framing', () => {
+  it('encodeMessage produces newline-delimited JSON', () => {
     const framed = StdioJsonRpcTransport.encodeMessage({ jsonrpc: '2.0', method: 'ping' });
-    assert.match(framed, /^Content-Length: \d+\r\n\r\n/);
+    assert.match(framed, /\n$/);
     assert.ok(framed.includes('"method":"ping"'));
   });
 

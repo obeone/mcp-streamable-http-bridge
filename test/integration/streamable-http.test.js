@@ -98,6 +98,20 @@ describe('Streamable HTTP integration', () => {
     const initBody = await initRes.json();
     assert.ok(initBody.result?.serverInfo?.name === 'mock-mcp');
 
+    const initializedRes = await fetch(`${baseUrl}/mcp/mock`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'mcp-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'notifications/initialized',
+      }),
+    });
+    assert.equal(initializedRes.status, 202);
+
     const listRes = await fetch(`${baseUrl}/mcp/mock`, {
       method: 'POST',
       headers: {

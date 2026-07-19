@@ -231,6 +231,13 @@ export class StreamableHttpHandler {
       const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
       this.metrics.recordRpc(serverName, mcpMethod, durationSec, toolName);
 
+      if (response?.notification) {
+        res.writeHead(202, { [SESSION_HEADER]: sessionId });
+        res.end();
+        this.metrics.recordHttpRequest('/mcp', 202);
+        return;
+      }
+
       res.writeHead(200, {
         'Content-Type': 'application/json',
         [SESSION_HEADER]: sessionId,

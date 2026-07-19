@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Minimal MCP stdio server for integration tests (Content-Length framing).
+ * Minimal MCP stdio server for integration tests (newline-delimited JSON).
  */
 import process from 'node:process';
 
@@ -13,27 +13,20 @@ process.stdin.on('data', (chunk) => {
 
 function processMessages() {
   while (true) {
-    const headerEnd = buffer.indexOf('\r\n\r\n');
-    if (headerEnd === -1) return;
-    const headerText = buffer.slice(0, headerEnd);
-    const match = headerText.match(/Content-Length:\s*(\d+)/i);
-    if (!match) {
-      buffer = buffer.slice(headerEnd + 4);
-      continue;
+    const newline = buffer.indexOf('\n');
+    if (newline === -1) return;
+    let line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    if (line.endsWith('\r')) {
+      line = line.slice(0, -1);
     }
-    const len = parseInt(match[1], 10);
-    const bodyStart = headerEnd + 4;
-    if (buffer.length < bodyStart + len) return;
-    const body = buffer.slice(bodyStart, bodyStart + len);
-    buffer = buffer.slice(bodyStart + len);
-    handleMessage(JSON.parse(body));
+    if (!line.trim()) continue;
+    handleMessage(JSON.parse(line));
   }
 }
 
 function writeMessage(msg) {
-  const body = JSON.stringify(msg);
-  const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-  process.stdout.write(header + body);
+  process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
 
 function handleMessage(msg) {

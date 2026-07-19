@@ -53,17 +53,72 @@ export class McpServerInstance {
       return this.startPromise;
     }
 
-    this.startPromise = this.#doStart();
+    this.startPromise = this.#doStart().catch((err) => {
+      this.startPromise = null;
+      throw err;
+    });
     return this.startPromise;
+  }
+
+  /** @param {Buffer | string} chunk */
+  #logChildStderr(chunk) {
+    const text = chunk.toString('utf8');
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      const childRaw = line.length > 2000 ? `${line.slice(0, 2000)}…` : line;
+      let level = 'info';
+      let childMessage = childRaw;
+
+      try {
+        const parsed = JSON.parse(line);
+        if (typeof parsed.level === 'string') {
+          const normalized = parsed.level.toLowerCase();
+          if (normalized === 'warning') {
+            level = 'warn';
+          } else if (['error', 'warn', 'info', 'debug'].includes(normalized)) {
+            level = normalized;
+          }
+        }
+        if (typeof parsed.message === 'string' && parsed.message.trim()) {
+          childMessage = parsed.message;
+        }
+      } catch {
+        // Plain-text stderr from the child (not JSON).
+      }
+
+      const log =
+        level === 'error'
+          ? this.logger.error.bind(this.logger)
+          : level === 'warn'
+            ? this.logger.warn.bind(this.logger)
+            : level === 'debug'
+              ? this.logger.debug.bind(this.logger)
+              : this.logger.info.bind(this.logger);
+
+      log(childMessage, { pid: this.child?.pid, stream: 'stderr' });
+    }
   }
 
   async #doStart() {
     const mergedEnv = { ...process.env, ...this.tenantEnv };
+    const useShell = process.platform === 'win32';
     this.child = spawn(this.server.command, this.server.args, {
       env: mergedEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
+      shell: useShell,
       windowsHide: true,
+    });
+
+    await new Promise((resolve, reject) => {
+      const child = this.child;
+      if (!child) {
+        reject(new Error('Failed to spawn MCP server process'));
+        return;
+      }
+      child.once('spawn', resolve);
+      child.once('error', reject);
     });
 
     this.transport = new StdioJsonRpcTransport(this.child);
@@ -73,11 +128,17 @@ export class McpServerInstance {
       }
     });
 
-    this.child.stderr.on('data', (chunk) => {
-      const text = chunk.toString('utf8').trim();
-      if (!text) return;
-      const line = text.length > 500 ? `${text.slice(0, 500)}…` : text;
-      this.logger.warn('child stderr', { pid: this.child?.pid, line });
+    this.child.stderr.on('data', (chunk) => this.#logChildStderr(chunk));
+
+    this.child.on('error', (err) => {
+      if (this.dead) return;
+      this.dead = true;
+      this.logger.error('child process error', {
+        pid: this.child?.pid,
+        message: err.message,
+        instanceKeyPrefix: this.instanceKeyPrefix,
+      });
+      this.transport?.dispose();
     });
 
     this.child.on('exit', (code, signal) => {
@@ -128,12 +189,31 @@ export class McpServerInstance {
       };
     }
 
+    if (this.#isClientNotification(message)) {
+      this.transport.notify({
+        method: message.method,
+        params: message.params,
+      });
+      return { notification: true };
+    }
+
     const response = await this.transport.request({
       method: message.method,
       params: message.params,
       id: message.id,
     });
     return response;
+  }
+
+  /** @param {object} message */
+  #isClientNotification(message) {
+    if (!message.method || message.method === 'initialize') {
+      return false;
+    }
+    if (message.method.startsWith('notifications/')) {
+      return true;
+    }
+    return message.id === undefined || message.id === null;
   }
 
   async close() {
