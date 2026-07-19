@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 /** Paths used inside the container (Compose volume mounts). */
 export const CONTAINER_MCP_CONFIG_DIR = '/config';
+/** Gateway MCP spawn definitions (Cursor-style); other JSON in config/ is not loaded. */
+export const GATEWAY_MCP_CONFIG_FILENAME = 'mcp.json';
 export const CONTAINER_LOG_FILE_PATH = '/app/logs/mcp-wrapper.log';
 export const METRICS_PATH = '/metrics';
 export const CATALOG_MARKDOWN_PATH = '/catalog.md';

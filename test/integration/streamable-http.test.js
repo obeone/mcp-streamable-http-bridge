@@ -18,7 +18,7 @@ describe('Streamable HTTP integration', () => {
     configDir = path.join(projectRoot, 'test/fixtures/config');
     await fs.mkdir(configDir, { recursive: true });
     await fs.writeFile(
-      path.join(configDir, 'servers.json'),
+      path.join(configDir, 'mcp.json'),
       JSON.stringify({
         mcpServers: {
           mock: {

@@ -6,15 +6,20 @@ import os from 'node:os';
 import { ConfigLoader } from '../../src/managers/ConfigLoader.js';
 
 describe('ConfigLoader', () => {
-  it('merges servers from multiple files', async () => {
+  it('loads servers only from mcp.json', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-cfg-'));
     await fs.writeFile(
-      path.join(dir, 'a.json'),
-      JSON.stringify({ mcpServers: { one: { command: 'node', args: [] } } })
+      path.join(dir, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          one: { command: 'node', args: [] },
+          two: { command: 'python3', args: ['-m', 'x'] },
+        },
+      })
     );
     await fs.writeFile(
-      path.join(dir, 'b.json'),
-      JSON.stringify({ mcpServers: { two: { command: 'python3', args: ['-m', 'x'] } } })
+      path.join(dir, 'ssh-config.json'),
+      JSON.stringify({ prod: { host: 'example.com', port: 22, username: 'u' } })
     );
 
     const defs = await new ConfigLoader().load(dir);
@@ -23,17 +28,10 @@ describe('ConfigLoader', () => {
     assert.deepEqual(names, ['one', 'two']);
   });
 
-  it('throws on duplicate server names', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-cfg-dup-'));
-    await fs.writeFile(
-      path.join(dir, 'a.json'),
-      JSON.stringify({ mcpServers: { dup: { command: 'node', args: [] } } })
-    );
-    await fs.writeFile(
-      path.join(dir, 'b.json'),
-      JSON.stringify({ mcpServers: { dup: { command: 'node', args: ['x'] } } })
-    );
+  it('throws when mcp.json is missing', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-cfg-miss-'));
+    await fs.writeFile(path.join(dir, 'ssh-config.json'), '{}');
 
-    await assert.rejects(() => new ConfigLoader().load(dir), /Duplicate MCP server name/);
+    await assert.rejects(() => new ConfigLoader().load(dir), /Gateway config not found/);
   });
 });

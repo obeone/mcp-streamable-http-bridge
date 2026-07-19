@@ -62,12 +62,13 @@ Outside Docker, paths resolve to the repo **`config/`** and **`logs/`** director
 
 ### Gateway config (`config/`)
 
-The wrapper reads **every `*.json` file** in the config directory (top level only—not subfolders) and **merges** all `mcpServers` entries. **Server names must be unique** across files; duplicates fail at startup.
+The wrapper reads **only** [`config/mcp.json`](config/mcp.json) for gateway `mcpServers`. Other files in `config/` (e.g. SSH MCP `ssh-config.json`, keys under `config/keys/`) are for child processes only and are **not** parsed by the gateway.
 
-| File | Loaded? | Role |
-|------|---------|------|
-| [`config/mcp.json`](config/mcp.json) | Yes | Your MCP servers (`command` / `args` / `env`) |
-| [`config/example.mock.mcp.json.sample`](config/example.mock.mcp.json.sample) | No (not `.json`) | Copy/rename to `.json` if you want the sample `mock` server |
+| File | Loaded by gateway? | Role |
+|------|-------------------|------|
+| [`config/mcp.json`](config/mcp.json) | Yes | MCP server spawn lines (`command` / `args` / `env`) |
+| Other JSON in `config/` | No | e.g. `@fangjunjie/ssh-mcp-server` `--config-file` |
+| [`config/example.mock.mcp.json.sample`](config/example.mock.mcp.json.sample) | No | Copy/rename into `mcp.json` if you want the sample `mock` server |
 
 Each loaded file uses the **gateway** schema (stdio spawn line):
 

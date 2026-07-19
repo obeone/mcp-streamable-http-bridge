@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { GATEWAY_MCP_CONFIG_FILENAME } from '../paths.js';
 import { ServerDefinition } from './ServerDefinition.js';
 
 export class ConfigLoader {
@@ -8,50 +9,30 @@ export class ConfigLoader {
    * @returns {Promise<ServerDefinition[]>}
    */
   async load(configDir) {
-    let entries;
+    const file = path.join(configDir, GATEWAY_MCP_CONFIG_FILENAME);
+    let parsed;
     try {
-      entries = await fs.readdir(configDir, { withFileTypes: true });
+      const text = await fs.readFile(file, 'utf8');
+      parsed = JSON.parse(text);
     } catch (err) {
-      throw new Error(`Cannot read config directory "${configDir}": ${err.message}`);
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+        throw new Error(
+          `Gateway config not found: "${file}" (expected ${GATEWAY_MCP_CONFIG_FILENAME} in config directory)`
+        );
+      }
+      throw new Error(`Failed to parse "${file}": ${err.message}`);
     }
 
-    const jsonFiles = entries
-      .filter((e) => e.isFile() && e.name.endsWith('.json'))
-      .map((e) => path.join(configDir, e.name));
-
-    if (jsonFiles.length === 0) {
-      throw new Error(`No .json config files found in "${configDir}"`);
+    const servers = parsed?.mcpServers;
+    if (!servers || typeof servers !== 'object') {
+      throw new Error(`File "${file}" must contain "mcpServers" object`);
     }
 
-    /** @type {Map<string, { def: ServerDefinition, file: string }>} */
-    const byName = new Map();
-
-    for (const file of jsonFiles) {
-      let parsed;
-      try {
-        const text = await fs.readFile(file, 'utf8');
-        parsed = JSON.parse(text);
-      } catch (err) {
-        throw new Error(`Failed to parse "${file}": ${err.message}`);
-      }
-
-      const servers = parsed?.mcpServers;
-      if (!servers || typeof servers !== 'object') {
-        throw new Error(`File "${file}" must contain "mcpServers" object`);
-      }
-
-      for (const [name, raw] of Object.entries(servers)) {
-        if (byName.has(name)) {
-          const prev = byName.get(name);
-          throw new Error(
-            `Duplicate MCP server name "${name}" in "${file}" and "${prev.file}"`
-          );
-        }
-        const def = ServerDefinition.fromConfigEntry(name, raw);
-        byName.set(name, { def, file });
-      }
+    /** @type {ServerDefinition[]} */
+    const defs = [];
+    for (const [name, raw] of Object.entries(servers)) {
+      defs.push(ServerDefinition.fromConfigEntry(name, raw));
     }
-
-    return [...byName.values()].map((x) => x.def);
+    return defs;
   }
 }

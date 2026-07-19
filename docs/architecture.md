@@ -82,7 +82,7 @@ Composition root: load config, create logger and metrics registry, start HTTP se
 
 ### `ConfigLoader` / `ServerRegistry` / `ServerDefinition`
 
-- Read **all top-level `*.json` files** in the runtime config directory and merge `mcpServers` (duplicate names across files fail startup). Non-`.json` samples (e.g. `*.sample`) are ignored.
+- Read **only `mcp.json`** in the runtime config directory for `mcpServers`. Other files in that folder (SSH MCP config, keys, etc.) are ignored by the loader.
 - Merge `mcpServers` entries into a registry keyed by server name.
 - `ServerDefinition` holds `command`, `args`, and the list of `env` keys with optional static defaults from JSON.
 
