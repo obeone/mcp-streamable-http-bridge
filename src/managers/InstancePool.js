@@ -83,11 +83,13 @@ export class InstancePool {
       const instance = this.instances.get(key);
       const serverName = this.instanceServer.get(key);
       if (instance) {
+        const reasonLabel = instance.dead ? 'dead' : 'idle';
+        const pid = instance.child?.pid;
         await instance.close();
-        this.logger.info('evicted idle instance', {
+        this.logger.info(`Evicted ${reasonLabel} instance for server ${serverName}`, {
           server: serverName,
           instanceKeyPrefix: instance.instanceKeyPrefix,
-          reason: instance.dead ? 'dead' : 'idle',
+          ...(pid != null ? { pid } : {}),
         });
       }
       this.instances.delete(key);

@@ -1,6 +1,7 @@
 import { McpServerInstance } from '../managers/McpServerInstance.js';
 import { TenantEnvError } from '../utils/TenantEnvError.js';
 import { initSseResponse, writeSseJson } from './SseWriter.js';
+import { runWithRequestLogContext } from '../utils/RequestLogContext.js';
 
 /**
  * @typedef {import('../managers/ServerRegistry.js').ServerRegistry} ServerRegistry
@@ -206,7 +207,7 @@ export class StreamableHttpHandler {
 
       sessionId = this.sessionStore.create(serverName, instanceKey);
       session = this.sessionStore.get(sessionId);
-      this.logger.info('session created', {
+      this.logger.info(`New HTTP session for server ${serverName}`, {
         server: serverName,
         instanceKeyPrefix,
         sessionId: sessionId.slice(0, 8),
@@ -227,9 +228,20 @@ export class StreamableHttpHandler {
     }
 
     try {
-      const response = await instance.handleClientRequest(rpc);
+      const response = await runWithRequestLogContext(
+        { sessionId: sessionId.slice(0, 8) },
+        () => instance.handleClientRequest(rpc)
+      );
       const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
       this.metrics.recordRpc(serverName, mcpMethod, durationSec, toolName);
+      this.#logRpcComplete({
+        serverName,
+        mcpMethod,
+        toolName,
+        durationSec,
+        instance,
+        sessionId,
+      });
 
       if (response?.notification) {
         res.writeHead(202, { [SESSION_HEADER]: sessionId });
@@ -245,12 +257,14 @@ export class StreamableHttpHandler {
       res.end(JSON.stringify(response));
       this.metrics.recordHttpRequest('/mcp', 200);
     } catch (err) {
-      this.logger.error('RPC failed', {
-        server: serverName,
-        method: mcpMethod,
-        error: err.message,
-      });
       const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
+      const rpcLabel = this.#describeRpc(mcpMethod, toolName);
+      this.logger.error(`${rpcLabel} failed: ${err.message}`, {
+        server: serverName,
+        instanceKeyPrefix: instance.instanceKeyPrefix,
+        sessionId: sessionId.slice(0, 8),
+        pid: instance.child?.pid,
+      });
       this.metrics.recordRpc(serverName, mcpMethod, durationSec, toolName);
 
       if (rpc.id !== undefined) {
@@ -271,6 +285,35 @@ export class StreamableHttpHandler {
         this.metrics.recordHttpRequest('/mcp', 500);
       }
     }
+  }
+
+  #describeRpc(mcpMethod, toolName) {
+    if (mcpMethod === 'tools/call' && toolName) {
+      return `RPC tools/call ${toolName}`;
+    }
+    return `RPC ${mcpMethod}`;
+  }
+
+  #logRpcComplete({ serverName, mcpMethod, toolName, durationSec, instance, sessionId }) {
+    const durationMs = Math.round(durationSec * 1000);
+    const label = this.#describeRpc(mcpMethod, toolName);
+    const message = `${label} completed in ${durationMs}ms`;
+    const meta = {
+      server: serverName,
+      instanceKeyPrefix: instance.instanceKeyPrefix,
+      sessionId: sessionId.slice(0, 8),
+      pid: instance.child?.pid,
+    };
+
+    if (mcpMethod === 'tools/list' || mcpMethod === 'ping') {
+      this.logger.debug(message, meta);
+      return;
+    }
+    if (mcpMethod === 'notifications/initialized') {
+      this.logger.debug(message, meta);
+      return;
+    }
+    this.logger.info(message, meta);
   }
 
   #ensureNotificationBridge(instanceKey, instance) {

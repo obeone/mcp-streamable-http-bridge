@@ -39,7 +39,9 @@ export class McpWrapperApplication {
   }
 
   async start() {
-    this.logger = LoggerFactory.create({ logFilePath: this.logFilePath });
+    this.logger = LoggerFactory.create({ logFilePath: this.logFilePath }).child({
+      component: 'Gateway',
+    });
     const metrics = new MetricsRegistry();
 
     const loader = new ConfigLoader();
@@ -48,10 +50,10 @@ export class McpWrapperApplication {
     metrics.setServersConfigured(registry.size());
     metrics.setInstancesActive({});
 
-    this.logger.info('configuration loaded', {
-      configDir: this.configDir,
-      servers: registry.names(),
-    });
+    const serverNames = registry.names();
+    this.logger.info(
+      `Loaded MCP config from ${this.configDir}; ${serverNames.length} server(s): ${serverNames.join(', ') || '(none)'}`
+    );
 
     const sessionStore = new SessionStore();
     const tenantResolver = new TenantEnvResolver();
@@ -82,13 +84,13 @@ export class McpWrapperApplication {
     });
 
     await this.httpServer.listen(this.port);
-    this.logger.info('HTTP server listening', { port: this.port });
+    this.logger.info(`Listening for Streamable HTTP on port ${this.port}`);
 
     const intervalMs = 60_000;
     this.evictionTimer = setInterval(() => {
       this.pool
         ?.evictIdle()
-        .catch((err) => this.logger.error('eviction failed', { error: err.message }));
+        .catch((err) => this.logger.error(`Idle eviction run failed: ${err.message}`));
     }, intervalMs);
   }
 
@@ -99,6 +101,6 @@ export class McpWrapperApplication {
     }
     await this.httpServer?.stop();
     await this.pool?.closeAll();
-    this.logger?.info('application stopped');
+    this.logger?.info('Gateway stopped');
   }
 }

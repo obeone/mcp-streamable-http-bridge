@@ -238,9 +238,11 @@ Mount host **`config/`** at **`/config`** (read-only) and **`logs/`** at **`/app
 | Console | Always enabled (colorized text) |
 | File | **`/app/logs/mcp-wrapper.log`**, human-readable lines; rotate on **`LOG_MAX_SIZE`** only (default `10m`), keep **`LOG_MAX_FILES`** (default `5`); archived files use numeric suffixes (e.g. `.1`), not dates |
 
+Pretty lines look like: `{timestamp} [McpServerInstance:weather] {level}: {message} (tenant=…, session=…, pid=…)` — bracket matches `logger.child({ component })` (and `:server` when set).
+
 Level from **`LOG_LEVEL`** (default `info`). Timestamps and stack traces on errors.
 
-Inject **`logger.child({ component, server })`** into pool, HTTP, and config modules. MCP child stderr uses a dedicated metadata field, not raw tenant env.
+Inject **`logger.child({ component, server })`** into pool, HTTP, and instance modules. MCP child stderr is prefixed in the message and tagged with tenant/session (when in an RPC) and pid. Known noisy child startup lines are logged at **debug** unless **`LOG_LEVEL`** is `debug` (or finer), so they appear only when you turn logging up.
 
 ## Metrics architecture
 

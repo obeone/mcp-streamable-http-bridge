@@ -1,6 +1,8 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { StdioJsonRpcTransport } from './StdioJsonRpcTransport.js';
+import { getRequestLogContext } from '../utils/RequestLogContext.js';
+import { shouldDemoteChildStderrToDebug } from '../utils/logFormat.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -88,6 +90,17 @@ export class McpServerInstance {
         // Plain-text stderr from the child (not JSON).
       }
 
+      if (shouldDemoteChildStderrToDebug(childMessage)) {
+        level = 'debug';
+      }
+
+      const requestCtx = getRequestLogContext();
+      const logMeta = {
+        pid: this.child?.pid,
+        instanceKeyPrefix: this.instanceKeyPrefix,
+        ...(requestCtx?.sessionId ? { sessionId: requestCtx.sessionId } : {}),
+      };
+
       const log =
         level === 'error'
           ? this.logger.error.bind(this.logger)
@@ -97,7 +110,7 @@ export class McpServerInstance {
               ? this.logger.debug.bind(this.logger)
               : this.logger.info.bind(this.logger);
 
-      log(childMessage, { pid: this.child?.pid, stream: 'stderr' });
+      log(`Child stderr: ${childMessage}`, logMeta);
     }
   }
 
@@ -133,9 +146,8 @@ export class McpServerInstance {
     this.child.on('error', (err) => {
       if (this.dead) return;
       this.dead = true;
-      this.logger.error('child process error', {
+      this.logger.error(`Child process error: ${err.message}`, {
         pid: this.child?.pid,
-        message: err.message,
         instanceKeyPrefix: this.instanceKeyPrefix,
       });
       this.transport?.dispose();
@@ -143,10 +155,10 @@ export class McpServerInstance {
 
     this.child.on('exit', (code, signal) => {
       this.dead = true;
-      this.logger.info('child exited', {
+      const codeText = code == null ? 'null' : String(code);
+      const signalText = signal ? `, signal ${signal}` : '';
+      this.logger.info(`Child process exited (code ${codeText}${signalText})`, {
         pid: this.child?.pid,
-        code,
-        signal,
         instanceKeyPrefix: this.instanceKeyPrefix,
       });
       this.transport?.dispose();
@@ -165,7 +177,7 @@ export class McpServerInstance {
     this.initializeResult = initResponse.result ?? initResponse;
     this.transport.notify({ method: 'notifications/initialized' });
     this.touch();
-    this.logger.info('instance started', {
+    this.logger.info('MCP initialize finished; child process ready', {
       pid: this.child.pid,
       instanceKeyPrefix: this.instanceKeyPrefix,
     });

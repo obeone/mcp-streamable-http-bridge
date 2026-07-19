@@ -3,6 +3,7 @@ import path from 'node:path';
 import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import { LOG_FILE_PATH } from './paths.js';
+import { formatPrettyLogLine, remainingMetaForDebug } from './utils/logFormat.js';
 
 function parseMaxFiles(value) {
   const n = Number(value ?? '5');
@@ -27,21 +28,27 @@ export class LoggerFactory {
     const dir = path.dirname(filename);
     fs.mkdirSync(dir, { recursive: true });
 
-    const lineFormat = winston.format.printf(({ timestamp, level, message, ...meta }) => {
-      const extra = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-      return `${timestamp} ${level}: ${message}${extra}`;
+    const prettyLineFormat = winston.format.printf((info) => {
+      const line = formatPrettyLogLine(info);
+      if (level === 'debug') {
+        const extra = remainingMetaForDebug(info);
+        if (Object.keys(extra).length) {
+          return `${line} ${JSON.stringify(extra)}`;
+        }
+      }
+      return line;
     });
 
     const fileFormat = winston.format.combine(
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
-      lineFormat
+      prettyLineFormat
     );
 
     const consoleFormat = winston.format.combine(
       winston.format.colorize(),
       winston.format.timestamp(),
-      lineFormat
+      prettyLineFormat
     );
 
     /** @type {winston.transport[]} */
