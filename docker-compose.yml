@@ -1,6 +1,6 @@
 services:
   mcp-wrapper:
-    image: ${MCP_BRIDGE_IMAGE:-ghcr.io/elad-bar/mcp-streamable-http-bridge:latest}
+    image: ghcr.io/elad-bar/mcp-streamable-http-bridge:latest
     build: .
     ports:
       - "${PORT:-8080}:8080"

@@ -25,13 +25,11 @@ Implementation is **Node.js (JavaScript)**, organized in a **class-first** struc
 Pull the published image from **`ghcr.io/elad-bar/mcp-streamable-http-bridge`** (built on push to `main` via GitHub Actions), or build locally:
 
 ```bash
-docker compose pull    # optional: ghcr.io/elad-bar/mcp-streamable-http-bridge:latest
+docker compose pull
 docker compose up -d
-# local build instead of pull:
+# or build locally (tags the same GHCR name):
 docker compose up --build -d
 ```
-
-Override the image with **`MCP_BRIDGE_IMAGE`** (e.g. a specific SHA tag from CI).
 
 - **Config:** edit JSON under [`config/`](config/) (mounted read-only at **`/config`** in the container).
 - **Logs:** written to [`logs/`](logs/) on the host via **`./logs:/app/logs`** (active file **`/app/logs/mcp-wrapper.log`** inside the container).
