@@ -1,0 +1,1 @@
+{"mcpServers":{"mock":{"command":"node","args":["C:\\Git\\GitHub\\elad\\generic-mcp-wrapper-stdio-http\\test\\fixtures\\mock-stdio-server.js"],"env":{"MOCK_TOKEN":"default-token"}}}}

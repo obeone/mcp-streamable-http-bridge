@@ -1,0 +1,7 @@
+# Keep Docker build context small
+node_modules/
+logs/
+.git/
+.env
+*.log
+test/

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mock": {
+      "command": "node",
+      "args": ["test/fixtures/mock-stdio-server.js"],
+      "env": {
+        "MOCK_TOKEN": "default-token"
+      }
+    }
+  }
+}

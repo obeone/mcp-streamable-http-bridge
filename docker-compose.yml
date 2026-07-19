@@ -1,0 +1,26 @@
+services:
+  mcp-wrapper:
+    build: .
+    image: mcp-streamable-http-bridge:latest
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      MCP_WRAPPER_IDLE_MINUTES: ${MCP_WRAPPER_IDLE_MINUTES:-15}
+      MCP_PROTOCOL_VERSION: ${MCP_PROTOCOL_VERSION:-2024-11-05}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_MAX_SIZE: ${LOG_MAX_SIZE:-10m}
+      LOG_MAX_FILES: ${LOG_MAX_FILES:-5}
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./config:/config:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
