@@ -218,6 +218,8 @@ Future enhancement: drain in-flight tool calls before kill with a max wait.
 
 ## Container image
 
+Published as **`ghcr.io/elad-bar/mcp-streamable-http-bridge`** (`latest` and commit SHA tags) via [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on push to `main`.
+
 Base image includes:
 
 - Node.js (wrapper runtime)
