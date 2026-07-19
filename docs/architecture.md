@@ -235,10 +235,10 @@ Mount host **`config/`** at **`/config`** (read-only) and **`logs/`** at **`/app
 
 | Transport | Behavior |
 |-----------|----------|
-| Console | Always enabled (colorized; alongside JSON file transport) |
-| File | **`/app/logs/mcp-wrapper.log`**, rotate on **`LOG_MAX_SIZE`** only (default `10m`), keep **`LOG_MAX_FILES`** (default `5`) |
+| Console | Always enabled (colorized text) |
+| File | **`/app/logs/mcp-wrapper.log`**, human-readable lines; rotate on **`LOG_MAX_SIZE`** only (default `10m`), keep **`LOG_MAX_FILES`** (default `5`); archived files use numeric suffixes (e.g. `.1`), not dates |
 
-Level from **`LOG_LEVEL`** (default `info`). JSON format with timestamp and stack traces on errors.
+Level from **`LOG_LEVEL`** (default `info`). Timestamps and stack traces on errors.
 
 Inject **`logger.child({ component, server })`** into pool, HTTP, and config modules. MCP child stderr uses a dedicated metadata field, not raw tenant env.
 

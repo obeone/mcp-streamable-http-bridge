@@ -27,36 +27,42 @@ export class LoggerFactory {
     const dir = path.dirname(filename);
     fs.mkdirSync(dir, { recursive: true });
 
-    const jsonFormat = winston.format.combine(
+    const lineFormat = winston.format.printf(({ timestamp, level, message, ...meta }) => {
+      const extra = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
+      return `${timestamp} ${level}: ${message}${extra}`;
+    });
+
+    const fileFormat = winston.format.combine(
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
-      winston.format.json()
+      lineFormat
+    );
+
+    const consoleFormat = winston.format.combine(
+      winston.format.colorize(),
+      winston.format.timestamp(),
+      lineFormat
     );
 
     /** @type {winston.transport[]} */
     const transports = [
       new DailyRotateFile({
         filename,
+        frequency: 'dont-rotate',
         maxSize,
         maxFiles,
         createSymlink: false,
         zippedArchive: false,
+        auditFile: path.join(dir, '.mcp-wrapper-log-audit.json'),
+        format: fileFormat,
       }),
       new winston.transports.Console({
-        format: winston.format.combine(
-          winston.format.colorize(),
-          winston.format.timestamp(),
-          winston.format.printf(({ timestamp, level, message, ...meta }) => {
-            const extra = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-            return `${timestamp} ${level}: ${message}${extra}`;
-          })
-        ),
+        format: consoleFormat,
       }),
     ];
 
     return winston.createLogger({
       level,
-      format: jsonFormat,
       transports,
     });
   }
