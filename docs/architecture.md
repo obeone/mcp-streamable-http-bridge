@@ -12,8 +12,8 @@ flowchart TB
     HTTP[McpHttpServer]
     Resolver[TenantEnvResolver]
     Pool[InstancePool]
-    I1[McpServerInstance hash A]
-    I2[McpServerInstance hash B]
+    I1[McpServerInstance session A]
+    I2[McpServerInstance session B]
     CFG[ConfigLoader / ServerRegistry]
   end
 
@@ -39,7 +39,7 @@ The wrapper is a single Node.js process that manages many **stdio** child proces
 | Principle | Implication |
 |-----------|-------------|
 | Config reuse | `mcpServers` matches Cursor `mcp.json`; minimal extra schema |
-| Convention over configuration | `env` keys + `x-<KEY>` headers define tenant env and hash |
+| Convention over configuration | `env` keys + allowlisted `x-<KEY>` headers define the session environment |
 | Global ops policy | Idle minutes and logging via environment variables |
 | Class-first modules | One primary class per boundary; `McpWrapperApplication` wires dependencies |
 | Safe observability | Metrics aggregate by server/tool; secrets stay out of labels and logs |
@@ -95,7 +95,7 @@ For a given server and request headers:
 3. Fail if still missing/empty.
 4. Compute `instanceKey = SHA-256(serverName + canonical sorted key=value pairs)`.
 
-Returns `{ env, instanceKey }` for the pool.
+Returns `{ env }`. SessionStore independently generates the session ID and process key.
 
 ### `InstancePool`
 
@@ -103,7 +103,7 @@ Returns `{ env, instanceKey }` for the pool.
 - **`touch(instanceKey)`** — update last-used timestamp.
 - **`evictIdle()`** — called on interval; closes instances where `now - lastUsedAt > idleMs()`.
 
-Concurrency: use a per-key pending promise so two simultaneous first requests for the same hash do not double-spawn.
+Concurrency: use a per-key pending promise so two simultaneous first requests for the same instance key do not double-spawn.
 
 ### `IdleEvictionPolicy`
 
@@ -129,8 +129,8 @@ Newline-delimited JSON-RPC on stdin/stdout:
 
 ### `SessionStore` / `StreamableHttpHandler`
 
-- **`SessionStore`**: opaque `mcp-session-id` → `{ serverName, instanceKey }`; invalidate when instance evicted
-- **`StreamableHttpHandler`**: Streamable HTTP POST/GET on `/mcp/:serverName`; creates session on first `initialize`; bridges stdio notifications to SSE via **`SseWriter`**
+- **`SessionStore`**: opaque `mcp-session-id` → `{ serverName, instanceKey, owner }`; invalidate when instance evicted
+- **`StreamableHttpHandler`**: Streamable HTTP POST/GET on `/mcp/:serverName`; creates a fresh process on each first `initialize`; bridges session-local stdio notifications to SSE via **`SseWriter`**
 
 ### `McpHttpServer`
 
@@ -162,12 +162,11 @@ sequenceDiagram
   participant M as MCP stdio server
 
   C->>H: POST initialize + x-env headers
-  H->>R: resolve(server, headers)
+  H->>R: resolve session environment
   H->>P: acquire(instanceKey)
   P->>I: start subprocess
   I->>T: initialize / initialized
   T->>M: stdio
-  H->>S: create session
   H-->>C: JSON + mcp-session-id
 
   C->>H: POST tools/list + mcp-session-id
@@ -179,27 +178,15 @@ sequenceDiagram
   H-->>C: application/json
 ```
 
-## Tenancy and hashing
+## Session identity and process affinity
 
-**Canonical form** (conceptual):
+`SessionStore.create()` generates a random UUID and derives an opaque instance key from the server name and that UUID. Credentials do not determine process reuse. Each initialization owns a separate child, even when its environment matches another session exactly.
 
-```text
-instanceKey = SHA256(
-  serverName + "\0" +
-  JSON.stringify(sorted(Object.entries(resolvedEnv)))
-)
-```
+Subsequent POST, GET and DELETE requests resolve the session's instance key and verify its owner. Supplied tenant headers must match the original environment. A missing or dead process expires the session with HTTP 404; it is never silently replaced under the same ID. DELETE terminates only the selected session's process and SSE streams.
 
-Properties:
+Closing an SSE connection removes that stream without discarding the process or its state. Idle expiry defaults to 15 minutes; `MCP_WRAPPER_IDLE_MINUTES=0` disables idle expiry while preserving dead-process cleanup and capacity limits.
 
-- Same server + same resolved env → same subprocess.
-- Changing any declared `env` value (via header or config) → new subprocess.
-- Keys not listed under `env` in config are not part of tenant identity (declare child settings like `NODE_ENV` explicitly in the server `env` block).
-
-**Security notes:**
-
-- Do not use `instanceKey` as a Prometheus label (unbounded cardinality).
-- Do not log full hashes or header values; optional `instanceKeyPrefix` (first 8 hex chars) in logs for support.
+See [session lifecycle](sessions.md) for the state and recovery contract.
 
 ## Idle eviction
 

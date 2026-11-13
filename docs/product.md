@@ -14,7 +14,7 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 
 - Reads **Cursor-compatible** `mcpServers` configuration from a mounted config directory.
 - Exposes **MCP Streamable HTTP** (`POST` + session header, optional `GET` SSE) while proxying to stdio children.
-- Uses a **convention-based tenant model**: empty `env` entries, or keys explicitly listed in `headerEnv`, can be supplied or overridden via **`x-<ENV_NAME>`** headers; resolved env plus server name defines a **hash** and thus a dedicated subprocess.
+- Uses a **convention-based tenant model**: empty `env` entries, or keys explicitly listed in `headerEnv`, can be supplied or overridden via **`x-<ENV_NAME>`** headers; each generated session ID identifies its own dedicated subprocess, even when resolved credentials match.
 - Applies a **global idle timeout** (`MCP_WRAPPER_IDLE_MINUTES`) to stop unused subprocesses.
 - Preinstalls **npx**, **uv (Astral)**, and **python3** so most upstream MCP packages run without custom images.
 - Provides **operations-grade** logging (Winston, size-based rotation) and **Prometheus** metrics for capacity and SLO monitoring.
@@ -36,13 +36,13 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 
 ### Multi-tenant stdio instances
 
-- One subprocess per **(server name, resolved env)** hash.
+- One subprocess per **(server name, generated session ID)** pair.
 - Header **`x-<ENV>`** supplies empty `env` entries and explicitly allowlisted `headerEnv` overrides.
 - Nonempty JSON values stay fixed unless explicitly listed in `headerEnv`.
 
 ### Lifecycle management
 
-- Lazy start on first request for a hash.
+- Start one child on each new session initialization.
 - **Touch** idle timer on MCP activity.
 - Periodic eviction of instances idle longer than **`MCP_WRAPPER_IDLE_MINUTES`**.
 
@@ -54,7 +54,7 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 ### Observability
 
 - **Winston**: console + file, **size** rotation (`LOG_MAX_SIZE`, default 10m), **`LOG_MAX_FILES`** (default 5), default level **info**.
-- **Prometheus**: configured server count, active instances per server, RPC and tool call rates and latency — **without** using full tenant hash as metric labels.
+- **Prometheus**: configured server count, active instances per server, RPC and tool call rates and latency — **without** using session IDs or instance keys as metric labels.
 
 ## User-facing behavior
 
@@ -62,7 +62,7 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 
 1. Operator opens **`GET /`** (styled HTML catalog) or **`GET /catalog.md`** for raw Markdown.
 2. Client sends HTTP POST to `/mcp/{serverName}` with MCP JSON-RPC body and required `x-*` headers.
-2. Wrapper resolves env, computes hash, reuses or starts stdio child, completes MCP handshake if new.
+2. Wrapper resolves env, allocates a fresh session and subprocess, and completes that session’s MCP handshake.
 3. Request is forwarded; response returned over HTTP.
 4. Idle timer resets for that instance.
 
@@ -84,7 +84,7 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 ## Success criteria
 
 - Drop-in config from an existing **`mcp.json`** entry (plus headers for secret keys).
-- N distinct header/env combinations → at most N active subprocesses for that server (plus eviction).
+- N initialized sessions have N distinct subprocesses, bounded by global capacity and idle expiry.
 - Operators can scrape **`/metrics`** and tail rotated logs without seeing raw secrets.
 - Documented env vars for idle time and logging; **`/metrics`** is always on at a fixed path.
 

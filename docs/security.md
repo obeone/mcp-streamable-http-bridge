@@ -8,7 +8,7 @@ Set `MCP_WRAPPER_TRUSTED_USER_HEADER=x-authenticated-user` when the reverse prox
 
 If no trusted header is configured, the bridge binds the session to the incoming Authorization header when present. It does not validate that token. Without either identity source, the session ID is a bearer capability. A proxy that strips Authorization should supply the trusted identity header instead.
 
-Tenant credential headers are optional after initialization. If supplied again, they must match the environment used to start the subprocess. Unknown or expired session IDs return 404 and require a fresh initialization.
+Tenant credential headers are optional after initialization. If supplied again, they must match the environment used to start the subprocess. Unknown or expired session IDs return 404 and require a fresh initialization. Each session has a dedicated process; equal credentials never share one. DELETE verifies the same owner and stops only that session.
 
 ## Environment migration
 
@@ -43,4 +43,4 @@ Pending starts count against capacity. Failed starts release their capacity and 
 
 A timed-out operation may already have had side effects. It is never automatically retried. Late responses cannot match a subsequent request, even if a client reuses its JSON-RPC ID.
 
-These limits complement ingress rate limits and container memory, PID, filesystem and network restrictions. Use pinned MCP packages and least-privilege credentials. A restart loses the in-memory sessions and subprocess state.
+These limits complement ingress rate limits and container memory, PID, filesystem and network restrictions. Use pinned MCP packages and least-privilege credentials. A restart loses the in-memory sessions and subprocess state. `MCP_WRAPPER_IDLE_MINUTES=0` disables idle expiry when state must live until explicit DELETE or shutdown; global process and session quotas still apply.
