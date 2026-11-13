@@ -1,117 +1,157 @@
 import { EventEmitter } from 'node:events';
 
-/**
- * @typedef {import('../types.js').ChildProcessWithoutNullStreams} ChildProcessWithoutNullStreams
- *
- * MCP stdio transport: newline-delimited JSON (matches @modelcontextprotocol/sdk).
- */
+/** Newline-delimited JSON-RPC with scoped client IDs and bounded resources. */
 export class StdioJsonRpcTransport extends EventEmitter {
-  /** @param {ChildProcessWithoutNullStreams} child */
-  constructor(child) {
+  /**
+   * @param {import('../types.js').ChildProcessWithoutNullStreams} child Child process.
+   * @param {object} [options] Request and framing limits.
+   * @returns {StdioJsonRpcTransport} Transport for this process.
+   */
+  constructor(child, { requestTimeoutMs = 30_000, maxMessageBytes = 1024 * 1024, maxPendingRequests = 128 } = {}) {
     super();
     this.child = child;
     this.buffer = Buffer.alloc(0);
-    /** @type {Map<number | string, { resolve: Function, reject: Function }>} */
     this.pending = new Map();
     this.nextId = 1;
     this.closed = false;
-
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.maxMessageBytes = maxMessageBytes;
+    this.maxPendingRequests = maxPendingRequests;
     child.stdout.on('data', (chunk) => this.#onData(chunk));
-    child.on('exit', () => this.#onClose());
+    child.once('exit', () => this.dispose());
+    child.stdin.on('error', () => this.dispose());
   }
 
   /**
-   * @param {object} message
-   * @returns {Promise<object>}
+   * @param {object} message Client request, with its original ID.
+   * @param {string} [scope] Owning HTTP session, used for cancellation and progress.
+   * @returns {Promise<object>} Response carrying the original client ID.
+   * @throws {Error} If closed, overloaded, duplicated within a session, or timed out.
    */
-  request(message) {
-    if (this.closed) {
-      return Promise.reject(new Error('Transport closed'));
+  request(message, scope = '') {
+    if (this.closed) return Promise.reject(new Error('Transport closed'));
+    if (this.pending.size >= this.maxPendingRequests) {
+      return Promise.reject(new Error('Too many pending MCP requests'));
+    }
+    if (message.id !== undefined && [...this.pending.values()].some(
+      (entry) => entry.scope === scope && entry.originalId === message.id
+    )) {
+      return Promise.reject(new Error('Duplicate in-flight JSON-RPC ID'));
+    }
+    const id = `bridge-${this.nextId++}`;
+    const payload = { ...message, jsonrpc: '2.0', id };
+    const progressToken = message.params?._meta?.progressToken;
+    if (progressToken !== undefined) {
+      payload.params = { ...message.params, _meta: { ...message.params._meta, progressToken: id } };
     }
     return new Promise((resolve, reject) => {
-      const id = message.id ?? this.nextId++;
-      const payload = { ...message, jsonrpc: '2.0', id };
-      this.pending.set(id, { resolve, reject });
-      this.#writeMessage(payload);
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        this.#writeMessage({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } });
+        reject(new Error('MCP request timed out'));
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer, originalId: message.id, scope, progressToken });
+      try {
+        this.#writeMessage(payload);
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
-  /** @param {object} message */
-  notify(message) {
+  /**
+   * @param {object} message Notification in the client's ID namespace.
+   * @param {string} [scope] Owning HTTP session.
+   * @returns {void}
+   */
+  notify(message, scope = '') {
     if (this.closed) return;
+    if (message.method === 'notifications/cancelled') {
+      const entry = [...this.pending].find(([, pending]) =>
+        pending.scope === scope && pending.originalId === message.params?.requestId
+      );
+      if (!entry) return;
+      message = { ...message, params: { ...message.params, requestId: entry[0] } };
+    }
     this.#writeMessage({ ...message, jsonrpc: '2.0' });
   }
 
-  /** @param {object} obj */
-  #writeMessage(obj) {
-    this.child.stdin.write(`${JSON.stringify(obj)}\n`, 'utf8');
+  /** @param {object} message Wire message. @returns {void} */
+  #writeMessage(message) {
+    this.child.stdin.write(`${JSON.stringify(message)}\n`, 'utf8');
   }
 
-  /** @param {Buffer} chunk */
+  /** @param {Buffer} chunk Child stdout. @returns {void} */
   #onData(chunk) {
+    if (this.closed) return;
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    this.#processBuffer();
-  }
-
-  #processBuffer() {
-    while (true) {
+    while (!this.closed) {
       const newline = this.buffer.indexOf('\n');
-      if (newline === -1) return;
-
-      let line = this.buffer.subarray(0, newline).toString('utf8');
-      this.buffer = this.buffer.subarray(newline + 1);
-      if (line.endsWith('\r')) {
-        line = line.slice(0, -1);
+      if (newline > this.maxMessageBytes || (newline === -1 && this.buffer.length > this.maxMessageBytes)) {
+        this.dispose(new Error('MCP response exceeds message size limit'));
+        return;
       }
-      if (!line.trim()) continue;
-
-      let msg;
+      if (newline === -1) return;
+      const line = this.buffer.subarray(0, newline).toString('utf8').trim();
+      this.buffer = this.buffer.subarray(newline + 1);
+      if (!line) continue;
+      let message;
       try {
-        msg = JSON.parse(line);
+        message = JSON.parse(line);
       } catch {
         continue;
       }
-
-      this.#dispatchMessage(msg);
-    }
-  }
-
-  /** @param {object} msg */
-  #dispatchMessage(msg) {
-    if (msg.id !== undefined && this.pending.has(msg.id)) {
-      const { resolve, reject } = this.pending.get(msg.id);
-      this.pending.delete(msg.id);
-      if (msg.error) {
-        reject(Object.assign(new Error(msg.error.message || 'JSON-RPC error'), { rpcError: msg.error }));
-      } else {
-        resolve(msg);
+      if (message && !Array.isArray(message) && message.jsonrpc === '2.0') {
+        this.#dispatchMessage(message);
       }
-    } else if (msg.method && msg.id === undefined) {
-      this.emit('notification', msg);
-    } else if (msg.method && msg.id !== undefined) {
-      this.emit('request', msg);
     }
   }
 
-  #onClose() {
-    this.dispose();
+  /** @param {object} message Parsed wire message. @returns {void} */
+  #dispatchMessage(message) {
+    if (typeof message.method === 'string') {
+      if (message.id !== undefined) {
+        this.emit('request', message);
+      } else if (message.method === 'notifications/progress') {
+        const pending = this.pending.get(message.params?.progressToken);
+        if (pending?.progressToken !== undefined) {
+          this.emit('notification', {
+            ...message, params: { ...message.params, progressToken: pending.progressToken },
+          }, pending.scope);
+        }
+      } else {
+        this.emit('notification', message);
+      }
+      return;
+    }
+    const pending = this.pending.get(message.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pending.delete(message.id);
+    if (message.error) {
+      pending.reject(Object.assign(new Error('Upstream MCP request failed'), { rpcError: message.error }));
+    } else {
+      pending.resolve({ ...message, id: pending.originalId ?? message.id });
+    }
   }
 
-  dispose() {
+  /** @param {Error} [error] Failure shared by pending requests. @returns {void} */
+  dispose(error = new Error('Transport closed')) {
     if (this.closed) return;
     this.closed = true;
-    for (const { reject } of this.pending.values()) {
-      reject(new Error('Transport closed'));
+    this.buffer = Buffer.alloc(0);
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(error);
     }
     this.pending.clear();
     this.emit('close');
   }
 
-  /**
-   * Encode a message for tests / external use.
-   * @param {object} obj
-   */
-  static encodeMessage(obj) {
-    return `${JSON.stringify(obj)}\n`;
+  /** @param {object} message Wire message. @returns {string} Serialized frame. */
+  static encodeMessage(message) {
+    return `${JSON.stringify(message)}\n`;
   }
 }

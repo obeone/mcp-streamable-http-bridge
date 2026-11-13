@@ -230,7 +230,7 @@ export class StreamableHttpHandler {
     try {
       const response = await runWithRequestLogContext(
         { sessionId: sessionId.slice(0, 8) },
-        () => instance.handleClientRequest(rpc)
+        () => instance.handleClientRequest(rpc, sessionId)
       );
       const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
       this.metrics.recordRpc(serverName, mcpMethod, durationSec, toolName);
@@ -319,9 +319,9 @@ export class StreamableHttpHandler {
   #ensureNotificationBridge(instanceKey, instance) {
     if (this.notificationUnsubs.has(instanceKey)) return;
 
-    const unsub = instance.onNotification((msg) => {
+    const unsub = instance.onNotification((msg, scope) => {
       for (const [sessionId, session] of this.sessionStore.sessions) {
-        if (session.instanceKey !== instanceKey) continue;
+        if (session.instanceKey !== instanceKey || (scope && scope !== sessionId)) continue;
         const streams = this.sseBySession.get(sessionId);
         if (!streams) continue;
         for (const stream of streams) {
