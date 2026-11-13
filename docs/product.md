@@ -14,7 +14,7 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 
 - Reads **Cursor-compatible** `mcpServers` configuration from a mounted config directory.
 - Exposes **MCP Streamable HTTP** (`POST` + session header, optional `GET` SSE) while proxying to stdio children.
-- Uses a **convention-based tenant model**: any `env` key in config can be supplied or overridden via **`x-<ENV_NAME>`** headers; resolved env plus server name defines a **hash** and thus a dedicated subprocess.
+- Uses a **convention-based tenant model**: empty `env` entries, or keys explicitly listed in `headerEnv`, can be supplied or overridden via **`x-<ENV_NAME>`** headers; resolved env plus server name defines a **hash** and thus a dedicated subprocess.
 - Applies a **global idle timeout** (`MCP_WRAPPER_IDLE_MINUTES`) to stop unused subprocesses.
 - Preinstalls **npx**, **uv (Astral)**, and **python3** so most upstream MCP packages run without custom images.
 - Provides **operations-grade** logging (Winston, size-based rotation) and **Prometheus** metrics for capacity and SLO monitoring.
@@ -37,8 +37,8 @@ MCP servers that speak **stdio** are designed for a single client process: one s
 ### Multi-tenant stdio instances
 
 - One subprocess per **(server name, resolved env)** hash.
-- Header **`x-<ENV>`** overrides or supplies values for keys declared under `env`.
-- Static values in JSON apply when headers are omitted (shared default URL, etc.).
+- Header **`x-<ENV>`** supplies empty `env` entries and explicitly allowlisted `headerEnv` overrides.
+- Nonempty JSON values stay fixed unless explicitly listed in `headerEnv`.
 
 ### Lifecycle management
 
