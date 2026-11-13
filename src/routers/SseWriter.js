@@ -17,5 +17,5 @@ export function initSseResponse(res) {
  * @param {object} data
  */
 export function writeSseJson(res, data) {
-  res.write(`event: message\ndata: ${JSON.stringify(data)}\n\n`);
+  return res.write(`event: message\ndata: ${JSON.stringify(data)}\n\n`);
 }

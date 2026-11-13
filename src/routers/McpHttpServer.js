@@ -39,8 +39,12 @@ export class McpHttpServer {
       });
     });
 
-    return new Promise((resolve) => {
-      this.server.listen(port, () => resolve());
+    return new Promise((resolve, reject) => {
+      this.server.once('error', reject);
+      this.server.listen(port, () => {
+        this.server.removeListener('error', reject);
+        resolve();
+      });
     });
   }
 
