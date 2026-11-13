@@ -57,7 +57,7 @@ export class McpWrapperApplication {
       `Loaded MCP config from ${this.configDir}; ${serverNames.length} server(s): ${serverNames.join(', ') || '(none)'}`
     );
 
-    const sessionStore = new SessionStore();
+    const sessionStore = new SessionStore({ maxSessions: this.runtimeOptions.maxSessions });
     const tenantResolver = new TenantEnvResolver();
 
     /** @type {StreamableHttpHandler | undefined} */
@@ -78,6 +78,7 @@ export class McpWrapperApplication {
       sessionStore,
       metrics,
       logger: this.logger,
+      options: this.runtimeOptions,
     });
 
     this.httpServer = new McpHttpServer({

@@ -1,17 +1,20 @@
 import crypto from 'node:crypto';
+import { BridgeError } from '../utils/BridgeError.js';
 
 export class SessionStore {
-  constructor() {
+  constructor({ maxSessions = 100 } = {}) {
+    this.maxSessions = maxSessions;
     /** @type {Map<string, { sessionId: string, serverName: string, instanceKey: string, createdAt: number, lastUsedAt: number }>} */
     this.sessions = new Map();
     /** @type {Map<string, Set<string>>} instanceKey -> sessionIds */
     this.sessionsByInstance = new Map();
   }
 
-  create(serverName, instanceKey) {
+  create(serverName, instanceKey, owner = '') {
+    if (this.sessions.size >= this.maxSessions) throw new BridgeError(503, 'MCP session limit reached');
     const sessionId = crypto.randomUUID();
     const now = Date.now();
-    const record = { sessionId, serverName, instanceKey, createdAt: now, lastUsedAt: now };
+    const record = { sessionId, serverName, instanceKey, owner, createdAt: now, lastUsedAt: now };
     this.sessions.set(sessionId, record);
 
     if (!this.sessionsByInstance.has(instanceKey)) {

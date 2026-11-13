@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { BridgeError } from '../utils/BridgeError.js';
+import { readRuntimeOptions } from '../utils/RuntimeOptions.js';
 import { McpServerInstance } from '../managers/McpServerInstance.js';
 import { TenantEnvError } from '../utils/TenantEnvError.js';
 import { initSseResponse, writeSseJson } from './SseWriter.js';
@@ -26,7 +29,8 @@ const SESSION_HEADER = 'mcp-session-id';
 
 export class StreamableHttpHandler {
   /** @param {StreamableHttpHandlerDeps} deps */
-  constructor({ registry, tenantResolver, pool, sessionStore, metrics, logger }) {
+  constructor({ registry, tenantResolver, pool, sessionStore, metrics, logger, options = {} }) {
+    this.options = readRuntimeOptions(options);
     this.registry = registry;
     this.tenantResolver = tenantResolver;
     this.pool = pool;
@@ -53,18 +57,19 @@ export class StreamableHttpHandler {
       return;
     }
 
-    if (req.method === 'GET') {
-      await this.#handleGet(req, res, serverName);
-      return;
+    try {
+      this.#requestOwner(req);
+      if (req.method === 'GET') return await this.#handleGet(req, res, serverName, server);
+      if (req.method === 'POST') return await this.#handlePost(req, res, serverName, server);
+      this.#json(res, 405, { error: 'Method not allowed' });
+      this.metrics.recordHttpRequest('/mcp', 405);
+    } catch (error) {
+      const status = error instanceof BridgeError ? error.statusCode : 500;
+      if (!res.headersSent) this.#json(res, status, {
+        error: error instanceof BridgeError ? error.message : 'MCP operation failed',
+      });
+      this.metrics.recordHttpRequest('/mcp', status);
     }
-
-    if (req.method === 'POST') {
-      await this.#handlePost(req, res, serverName, server);
-      return;
-    }
-
-    this.#json(res, 405, { error: 'Method not allowed' });
-    this.metrics.recordHttpRequest('/mcp', 405);
   }
 
   /** @param {string} instanceKey */
@@ -89,7 +94,7 @@ export class StreamableHttpHandler {
     this.notificationUnsubs.clear();
   }
 
-  async #handleGet(req, res, serverName) {
+  async #handleGet(req, res, serverName, server) {
     const accept = String(req.headers.accept ?? '');
     if (!accept.includes('text/event-stream')) {
       this.#json(res, 406, { error: 'Accept text/event-stream required for GET' });
@@ -119,8 +124,12 @@ export class StreamableHttpHandler {
       return;
     }
 
+    this.#authorizeSession(req, session, server, instance);
     this.sessionStore.touch(sessionId);
     instance.touch();
+    if ((this.sseBySession.get(sessionId)?.size ?? 0) >= this.options.maxSseStreamsPerSession) {
+      throw new BridgeError(429, 'SSE stream limit reached');
+    }
 
     initSseResponse(res);
     if (!this.sseBySession.has(sessionId)) {
@@ -142,13 +151,21 @@ export class StreamableHttpHandler {
   }
 
   async #handlePost(req, res, serverName, server) {
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) {
+      throw new BridgeError(415, 'Content-Type application/json required');
+    }
+    if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') {
+      throw new BridgeError(415, 'Compressed request bodies are not supported');
+    }
     let body;
     try {
       body = await this.#readBody(req);
-    } catch {
-      this.#json(res, 400, { error: 'Invalid body' });
-      this.metrics.recordHttpRequest('/mcp', 400);
-      return;
+    } catch (error) {
+      if (error instanceof BridgeError) {
+        res.setHeader('Connection', 'close');
+        throw error;
+      }
+      throw new BridgeError(400, 'Invalid body');
     }
 
     let message;
@@ -168,8 +185,16 @@ export class StreamableHttpHandler {
     }
 
     const rpc = messages[0];
+    if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc) || rpc.jsonrpc !== '2.0' ||
+      typeof rpc.method !== 'string' || !rpc.method || rpc.method.length > 128 ||
+      /[\x00-\x1f\x7f]/.test(rpc.method) ||
+      (rpc.id != null && !(typeof rpc.id === 'string' && rpc.id.length <= 256) && !Number.isSafeInteger(rpc.id)) ||
+      (rpc.method === 'initialize' && rpc.id == null)) {
+      throw new BridgeError(400, 'Invalid JSON-RPC request');
+    }
     let sessionId = this.#getSessionId(req);
     let session = sessionId ? this.sessionStore.get(sessionId) : null;
+    if (sessionId && !session) throw new BridgeError(404, 'Invalid or expired session');
 
     /** @type {McpServerInstance | undefined} */
     let instance;
@@ -187,6 +212,7 @@ export class StreamableHttpHandler {
         this.metrics.recordHttpRequest('/mcp', 404);
         return;
       }
+      this.#authorizeSession(req, session, server, instance);
       this.sessionStore.touch(sessionId);
     } else {
       if (rpc.method !== 'initialize') {
@@ -208,11 +234,15 @@ export class StreamableHttpHandler {
       }
 
       const { env, instanceKey, instanceKeyPrefix } = resolved;
-      instance = await this.pool.acquire(instanceKey, serverName, () => {
-        return new McpServerInstance(server, env, instanceKeyPrefix, this.logger);
-      });
-
-      sessionId = this.sessionStore.create(serverName, instanceKey);
+      sessionId = this.sessionStore.create(serverName, instanceKey, this.#requestOwner(req));
+      try {
+        instance = await this.pool.acquire(instanceKey, serverName, () => {
+          return new McpServerInstance(server, env, instanceKeyPrefix, this.logger, this.options);
+        });
+      } catch (error) {
+        this.sessionStore.delete(sessionId);
+        throw error;
+      }
       session = this.sessionStore.get(sessionId);
       this.logger.info(`New HTTP session for server ${serverName}`, {
         server: serverName,
@@ -266,7 +296,7 @@ export class StreamableHttpHandler {
     } catch (err) {
       const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
       const rpcLabel = this.#describeRpc(mcpMethod, toolName);
-      this.logger.error(`${rpcLabel} failed: ${err.message}`, {
+      this.logger.error(`${rpcLabel} failed`, {
         server: serverName,
         instanceKeyPrefix: instance.instanceKeyPrefix,
         sessionId: sessionId.slice(0, 8),
@@ -283,12 +313,12 @@ export class StreamableHttpHandler {
           JSON.stringify({
             jsonrpc: '2.0',
             id: rpc.id,
-            error: { code: -32603, message: err.message || 'Internal error' },
+            error: { code: -32603, message: 'Upstream MCP request failed' },
           })
         );
         this.metrics.recordHttpRequest('/mcp', 200);
       } else {
-        this.#json(res, 500, { error: err.message });
+        this.#json(res, 500, { error: 'Upstream MCP request failed' });
         this.metrics.recordHttpRequest('/mcp', 500);
       }
     }
@@ -296,7 +326,7 @@ export class StreamableHttpHandler {
 
   #describeRpc(mcpMethod, toolName) {
     if (mcpMethod === 'tools/call' && toolName) {
-      return `RPC tools/call ${toolName}`;
+      return 'RPC tools/call';
     }
     return `RPC ${mcpMethod}`;
   }
@@ -356,13 +386,71 @@ export class StreamableHttpHandler {
     return Array.isArray(raw) ? raw[0] : raw;
   }
 
-  /** @param {IncomingMessage} req */
+  /**
+   * @param {IncomingMessage} req HTTP request.
+   * @returns {string} One-way binding to the verified proxy identity or bearer header.
+   * @throws {BridgeError} If a configured identity header is absent or invalid.
+   */
+  #requestOwner(req) {
+    const name = this.options.trustedUserHeader;
+    const identity = name ? req.headers[name] : req.headers.authorization;
+    if (name && (typeof identity !== 'string' || !identity.trim() || identity.length > 1024)) {
+      throw new BridgeError(401, 'Trusted user identity required');
+    }
+    return identity ? createHash('sha256').update(String(identity)).digest('hex') : '';
+  }
+
+  /**
+   * @param {IncomingMessage} req Session request.
+   * @param {object} session Stored ownership binding.
+   * @param {object} server Server definition.
+   * @param {McpServerInstance} instance Process created with the session credentials.
+   * @returns {void}
+   * @throws {BridgeError} If identity or supplied credentials differ.
+   */
+  #authorizeSession(req, session, server, instance) {
+    if (session.owner !== this.#requestOwner(req)) throw new BridgeError(403, 'Session owner mismatch');
+    try {
+      this.tenantResolver.assertSessionHeaders(server, req.headers, instance.tenantEnv);
+    } catch {
+      throw new BridgeError(403, 'Session credential mismatch');
+    }
+  }
+
+  /**
+   * @param {IncomingMessage} req Request body stream.
+   * @returns {Promise<string>} Bounded UTF-8 JSON body.
+   * @throws {BridgeError} If oversized, aborted, or too slow.
+   */
   #readBody(req) {
+    if (Number(req.headers['content-length'] ?? 0) > this.options.maxBodyBytes) {
+      req.resume();
+      return Promise.reject(new BridgeError(413, 'Request body too large'));
+    }
     return new Promise((resolve, reject) => {
       const chunks = [];
-      req.on('data', (c) => chunks.push(c));
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-      req.on('error', reject);
+      let size = 0;
+      const cleanup = () => {
+        clearTimeout(timer);
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
+        req.removeListener('error', onError);
+        req.removeListener('aborted', onAborted);
+      };
+      const fail = (error) => { cleanup(); req.resume(); reject(error); };
+      const onData = (chunk) => {
+        size += chunk.length;
+        if (size > this.options.maxBodyBytes) fail(new BridgeError(413, 'Request body too large'));
+        else chunks.push(chunk);
+      };
+      const onEnd = () => { cleanup(); resolve(Buffer.concat(chunks).toString('utf8')); };
+      const onError = () => fail(new BridgeError(400, 'Invalid request body'));
+      const onAborted = () => fail(new BridgeError(400, 'Request aborted'));
+      const timer = setTimeout(() => fail(new BridgeError(408, 'Request body timed out')), this.options.requestTimeoutMs);
+      req.on('data', onData);
+      req.once('end', onEnd);
+      req.once('error', onError);
+      req.once('aborted', onAborted);
     });
   }
 
