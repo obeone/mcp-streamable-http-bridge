@@ -1,7 +1,11 @@
 import client from 'prom-client';
 
+const RPC_METHODS = new Set(['initialize', 'ping', 'tools/list', 'tools/call', 'resources/list', 'resources/templates/list', 'resources/read', 'resources/subscribe', 'resources/unsubscribe', 'prompts/list', 'prompts/get', 'completion/complete', 'logging/setLevel', 'notifications/initialized', 'notifications/cancelled']);
+
 export class MetricsRegistry {
-  constructor() {
+  constructor({ maxToolLabels = 256 } = {}) {
+    this.toolLabels = new Set();
+    this.maxToolLabels = maxToolLabels;
     this.registry = new client.Registry();
     client.collectDefaultMetrics({ register: this.registry });
 
@@ -73,10 +77,15 @@ export class MetricsRegistry {
    * @param {string} [toolName]
    */
   recordRpc(server, mcpMethod, durationSeconds, toolName) {
+    mcpMethod = RPC_METHODS.has(mcpMethod) ? mcpMethod : 'other';
     this.rpcRequests.inc({ server, mcp_method: mcpMethod });
     this.rpcDuration.observe({ server, mcp_method: mcpMethod }, durationSeconds);
     if (mcpMethod === 'tools/call') {
-      this.toolCalls.inc({ server, tool: toolName || 'unknown' });
+      let tool = typeof toolName === 'string' && /^[a-zA-Z0-9_.-]{1,128}$/.test(toolName) ? toolName : 'unknown';
+      const key = `${server}:${tool}`;
+      if (!this.toolLabels.has(key) && this.toolLabels.size >= this.maxToolLabels) tool = 'other';
+      else this.toolLabels.add(key);
+      this.toolCalls.inc({ server, tool });
     }
   }
 

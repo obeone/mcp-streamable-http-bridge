@@ -7,8 +7,6 @@
  * @property {string} [hostHeader] req Host header when baseUrl unset
  */
 
-const SENSITIVE_KEY = /password|secret|token|key|url|credential|auth/i;
-
 export class McpCatalogMarkdown {
   /**
    * @param {ServerRegistry} registry
@@ -66,14 +64,13 @@ export class McpCatalogMarkdown {
         lines.push(`### ${name}`);
         lines.push('');
         lines.push(`- **MCP URL:** \`${this.#path(base, `/mcp/${encodeURIComponent(name)}`)}\``);
-        lines.push(`- **Spawn:** \`${server.command}\` ${server.args.map((a) => `\`${a}\``).join(' ')}`);
         lines.push('');
         lines.push('| Env variable | HTTP header | How to supply |');
         lines.push('|--------------|-------------|---------------|');
         for (const key of server.envKeys) {
           const header = `x-${key}`;
           const staticVal = server.staticEnv[key] ?? '';
-          lines.push(`| \`${key}\` | \`${header}\` | ${this.#envSourceDescription(key, staticVal)} |`);
+          lines.push(`| \`${key}\` | \`${header}\` | ${this.#envSourceDescription(staticVal, server.headerEnv.includes(key))} |`);
         }
         lines.push('');
         lines.push('**Client `mcp.json` (Streamable HTTP)**');
@@ -108,7 +105,7 @@ export class McpCatalogMarkdown {
     const fromEnv = (options.baseUrl ?? process.env.PUBLIC_BASE_URL ?? '').trim().replace(/\/$/, '');
     if (fromEnv) return fromEnv;
     const host = options.hostHeader?.split(',')[0]?.trim();
-    if (host) return `http://${host}`.replace(/\/$/, '');
+    if (host && /^(?:[a-zA-Z0-9.-]+|\[[a-fA-F0-9:]+\])(?::[0-9]+)?$/.test(host)) return `http://${host}`;
     return '';
   }
 
@@ -121,28 +118,10 @@ export class McpCatalogMarkdown {
     return `${base}${path}`;
   }
 
-  /**
-   * @param {string} key
-   * @param {string} staticVal
-   */
-  #envSourceDescription(key, staticVal) {
-    if (!staticVal) {
-      return 'Header required (or empty in config)';
-    }
-    if (this.#isSensitive(key, staticVal)) {
-      return 'Header or config default (value hidden in this catalog)';
-    }
-    return 'Header overrides config default (non-secret default in config)';
-  }
-
-  /**
-   * @param {string} key
-   * @param {string} value
-   */
-  #isSensitive(key, value) {
-    if (SENSITIVE_KEY.test(key)) return true;
-    if (value.includes('@') || value.includes('://')) return true;
-    return false;
+  /** @param {string} value Configured default. @param {boolean} overridable Header policy. @returns {string} Value-free description. */
+  #envSourceDescription(value, overridable) {
+    if (!overridable) return 'Fixed administrator value (header override disabled)';
+    return value ? 'Header or config default (value hidden)' : 'Header required';
   }
 
   /**
@@ -154,13 +133,8 @@ export class McpCatalogMarkdown {
     const url = this.#path(base, `/mcp/${encodeURIComponent(serverName)}`);
     /** @type {Record<string, string>} */
     const headers = {};
-    for (const key of server.envKeys) {
-      const staticVal = server.staticEnv[key] ?? '';
-      if (!staticVal || this.#isSensitive(key, staticVal)) {
-        headers[`x-${key}`] = `<your-${key.toLowerCase().replace(/_/g, '-')}>`;
-      } else {
-        headers[`x-${key}`] = staticVal;
-      }
+    for (const key of server.headerEnv) {
+      headers[`x-${key}`] = `<your-${key.toLowerCase().replace(/_/g, '-')}>`;
     }
     const entry = { url };
     if (Object.keys(headers).length > 0) {
