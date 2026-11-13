@@ -91,7 +91,7 @@ Composition root: load config, create logger and metrics registry, start HTTP se
 For a given server and request headers:
 
 1. For each key in `server.envKeys`, read `x-<KEY>` (case-insensitive).
-2. Resolve value: header ?? JSON default.
+2. Accept header overrides only for `headerEnv` keys (empty `env` entries by default); keep other JSON values fixed.
 3. Fail if still missing/empty.
 4. Compute `instanceKey = SHA-256(serverName + canonical sorted key=value pairs)`.
 
@@ -111,19 +111,19 @@ Reads **`MCP_WRAPPER_IDLE_MINUTES`** only (global). Converts to milliseconds; in
 
 ### `McpServerInstance`
 
-- **`spawn(command, args, { env: { ...process.env, ...tenantEnv } })`**
+- **`spawn(command, args, { env: createChildEnvironment(tenantEnv), shell: false })`**
 - Owns **`StdioJsonRpcTransport`**
 - On first use: MCP **`initialize`** + **`notifications/initialized`**
 - **`request(jsonRpc)`** — forward to transport, touch idle timer
 - **`close()`** — terminate subprocess (SIGTERM, optional SIGKILL after drain timeout)
 
-Child **stderr** is logged at a controlled level without echoing tenant secrets.
+Child stderr content is omitted from logs; only byte counts are available at debug level.
 
 ### `StdioJsonRpcTransport`
 
-**Content-Length** framed JSON-RPC on stdin/stdout (LSP-style, matching the official MCP SDK):
+Newline-delimited JSON-RPC on stdin/stdout:
 
-- Parse `Content-Length` headers from stdout buffer; write the same framing to stdin
+- Parse bounded newline-delimited JSON frames; remap client IDs to unique upstream IDs
 - Correlate responses by JSON-RPC `id`
 - Emit **`notification`** events for server-initiated messages (forwarded to SSE clients)
 
@@ -173,7 +173,7 @@ sequenceDiagram
   C->>H: POST tools/list + mcp-session-id
   H->>S: lookup session
   H->>I: handleClientRequest
-  I->>T: Content-Length JSON-RPC
+  I->>T: Newline-delimited JSON-RPC
   T->>M: stdin
   M->>T: stdout
   H-->>C: application/json
@@ -186,7 +186,7 @@ sequenceDiagram
 ```text
 instanceKey = SHA256(
   serverName + "\0" +
-  join("\0", sorted(envKeys.map(k => k + "=" + env[k])))
+  JSON.stringify(sorted(Object.entries(resolvedEnv)))
 )
 ```
 
@@ -194,7 +194,7 @@ Properties:
 
 - Same server + same resolved env → same subprocess.
 - Changing any declared `env` value (via header or config) → new subprocess.
-- Keys not listed under `env` in config are not part of tenant identity (use container-level env for global settings like `NODE_ENV`).
+- Keys not listed under `env` in config are not part of tenant identity (declare child settings like `NODE_ENV` explicitly in the server `env` block).
 
 **Security notes:**
 
@@ -242,7 +242,7 @@ Pretty lines look like: `{timestamp} [McpServerInstance:weather] {level}: {messa
 
 Level from **`LOG_LEVEL`** (default `info`). Timestamps and stack traces on errors.
 
-Inject **`logger.child({ component, server })`** into pool, HTTP, and instance modules. MCP child stderr is prefixed in the message and tagged with tenant/session (when in an RPC) and pid. Known noisy child startup lines are logged at **debug** unless **`LOG_LEVEL`** is `debug` (or finer), so they appear only when you turn logging up.
+Inject **`logger.child({ component, server })`** into pool, HTTP, and instance modules. MCP child stderr content is never included. Operational logs contain process and shortened session identifiers; configured values and command arguments are omitted from the catalog.
 
 ## Metrics architecture
 
@@ -282,7 +282,7 @@ Scrape **`GET /metrics`** on **`PORT`** unless a split metrics port is added lat
 | Missing tenant header/value | Reject before spawn; 401/400 |
 | JSON-RPC error from child | Return MCP error envelope to client |
 | Child exit | Remove from pool; next request respawns |
-| Eviction during long tool call | Prefer drain + timeout; document max tool duration vs idle minutes |
+| Eviction during long tool call | Skip workers with active requests; measure idleness after request completion |
 
 ## Extension points
 
@@ -295,3 +295,5 @@ Scrape **`GET /metrics`** on **`PORT`** unless a split metrics port is added lat
 
 - [Product overview](product.md)
 - [README](../README.md)
+
+See [security and deployment](security.md) for owner bindings, header overrides, and resource limits.

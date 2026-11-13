@@ -146,13 +146,19 @@ Header names are **case-insensitive**. Examples:
 | `GRAFANA_URL` | `x-GRAFANA_URL` |
 | `GRAFANA_API_KEY` | `x-GRAFANA_API_KEY` |
 
-**Resolution order:** header value if present, otherwise the value from JSON. If a key has no value from either source, the request is rejected before spawning.
+**Resolution order:** only keys in `headerEnv` accept header overrides. By default this list contains the empty `env` entries. Nonempty values stay fixed unless explicitly listed, for example `"headerEnv": ["GRAFANA_API_KEY"]`. Missing required values and attempts to change fixed settings are rejected before spawning. Runtime-loading variables such as `NODE_OPTIONS`, `PATH`, and `LD_PRELOAD` cannot be header-controlled.
 
 **Instance key:** `sha256(serverName + canonical resolved env)` — same server + same env → same subprocess; any difference → a new subprocess.
 
 Child processes inherit only essential system variables plus explicitly configured values. Child stderr content is omitted from bridge logs because it can contain credentials. Do not log header values or full instance keys; use structured logs with a short hash prefix for support.
 
-Stdio children use **Content-Length** framed JSON-RPC on stdin/stdout (same as the official MCP SDK).
+Stdio children use newline-delimited JSON-RPC on stdin/stdout. The bridge assigns unique upstream request IDs and translates responses, cancellation IDs, and progress tokens back to the owning HTTP session.
+
+## Security and resource limits
+
+Deploy behind an authenticating reverse proxy and prevent direct access to the bridge. Set `MCP_WRAPPER_TRUSTED_USER_HEADER` to the verified identity header supplied by that proxy. The proxy must strip client-supplied copies before setting it. Sessions bind to this identity on every POST and GET. Without that setting, an incoming `Authorization` header is hashed and bound to the session; if neither is present, possession of the session ID is the access boundary. The bridge itself does not validate bearer tokens.
+
+Protect the catalog, health, and metrics routes at the reverse proxy too. Shared filesystem permissions remain a deployment concern. No prompt-injection filtering is provided. See [security and deployment](docs/security.md) for limits and migration details.
 
 ## Environment variables
 
@@ -164,6 +170,14 @@ Stdio children use **Content-Length** framed JSON-RPC on stdin/stdout (same as t
 | `MCP_WRAPPER_IDLE_MINUTES` | `15` | Idle time before stopping a tenant subprocess |
 | `MCP_PROTOCOL_VERSION` | `2024-11-05` | MCP protocol version sent to stdio servers on spawn |
 | `PUBLIC_BASE_URL` | _(empty)_ | Public base URL for links in the `GET /` Markdown catalog (e.g. `https://mcp.example.com`) |
+| `MCP_WRAPPER_TRUSTED_USER_HEADER` | _(empty)_ | Verified identity header supplied by the authenticating reverse proxy |
+| `MCP_WRAPPER_MAX_INSTANCES` | `100` | Global running and starting process limit |
+| `MCP_WRAPPER_MAX_SESSIONS` | `100` | Global HTTP session limit, including initialization |
+| `MCP_WRAPPER_MAX_BODY_BYTES` | `1048576` | Maximum HTTP JSON body size |
+| `MCP_WRAPPER_MAX_MESSAGE_BYTES` | `1048576` | Maximum child stdout JSON frame size |
+| `MCP_WRAPPER_MAX_PENDING_REQUESTS` | `128` | Maximum pending RPC requests per process |
+| `MCP_WRAPPER_REQUEST_TIMEOUT_MS` | `30000` | RPC and HTTP body-read timeout |
+| `MCP_WRAPPER_MAX_SSE_STREAMS` | `4` | Maximum concurrent SSE streams per session |
 
 ### Logging (Winston)
 
