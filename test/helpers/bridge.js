@@ -46,9 +46,9 @@ export function post(url, message, headers = {}) {
   });
 }
 
-/** @param {object} bridge Live fixture. @param {object} [headers] Credentials and identity. @returns {Promise<string>} Generated session ID. */
-export async function initialize(bridge, headers = {}) {
-  const response = await post(bridge.url, { jsonrpc: '2.0', id: 1, method: 'initialize' }, { 'x-mock_token': 'test-token', ...headers });
+/** @param {object} bridge Live fixture. @param {object} [headers] Credentials and identity. @param {object} [params] Client handshake. @returns {Promise<string>} Generated session ID. */
+export async function initialize(bridge, headers = {}, params) {
+  const response = await post(bridge.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params }, { 'x-mock_token': 'test-token', ...headers });
   if (response.status !== 200) throw new Error(`Initialization failed: ${response.status}`);
   await response.json();
   return response.headers.get('mcp-session-id');

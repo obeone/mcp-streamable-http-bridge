@@ -4,15 +4,22 @@ import { BridgeError } from '../utils/BridgeError.js';
 export class SessionStore {
   constructor({ maxSessions = 100 } = {}) {
     this.maxSessions = maxSessions;
-    /** @type {Map<string, { sessionId: string, serverName: string, instanceKey: string, createdAt: number, lastUsedAt: number }>} */
+    /** @type {Map<string, { sessionId: string, serverName: string, instanceKey: string, owner: string, createdAt: number, lastUsedAt: number }>} */
     this.sessions = new Map();
     /** @type {Map<string, Set<string>>} instanceKey -> sessionIds */
     this.sessionsByInstance = new Map();
   }
 
-  create(serverName, instanceKey, owner = '') {
+  /**
+   * @param {string} serverName Target MCP definition.
+   * @param {string} [owner] Verified caller binding.
+   * @returns {string} New opaque session ID with its own process key.
+   * @throws {BridgeError} If session capacity has been reached.
+   */
+  create(serverName, owner = '') {
     if (this.sessions.size >= this.maxSessions) throw new BridgeError(503, 'MCP session limit reached');
     const sessionId = crypto.randomUUID();
+    const instanceKey = crypto.createHash('sha256').update(JSON.stringify([serverName, sessionId])).digest('hex');
     const now = Date.now();
     const record = { sessionId, serverName, instanceKey, owner, createdAt: now, lastUsedAt: now };
     this.sessions.set(sessionId, record);

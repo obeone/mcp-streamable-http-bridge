@@ -1,7 +1,7 @@
 import { IdleEvictionPolicy } from './IdleEvictionPolicy.js';
 import { BridgeError } from '../utils/BridgeError.js';
 
-/** Bounded instance registry; credentials determine reuse until session isolation is enabled. */
+/** Bounded registry of subprocesses owned by individual HTTP sessions. */
 export class InstancePool {
   /** @param {object} deps Logger, metrics, eviction policy and lifecycle callback. @returns {InstancePool} */
   constructor({ evictionPolicy, logger, metrics, onInstanceEvicted, maxInstances = 100 }) {

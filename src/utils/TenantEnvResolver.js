@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { TenantEnvError } from './TenantEnvError.js';
 
 /**
@@ -54,12 +53,7 @@ export class TenantEnvResolver {
       env[key] = value;
     }
 
-    const instanceKey = this.#hashInstanceKey(server.name, env);
-    return {
-      env,
-      instanceKey,
-      instanceKeyPrefix: instanceKey.slice(0, 8),
-    };
+    return { env };
   }
 
   /**
@@ -76,17 +70,5 @@ export class TenantEnvResolver {
         throw new TenantEnvError('Session credential mismatch');
       }
     }
-  }
-
-  /**
-   * @param {string} serverName
-   * @param {Record<string, string>} env
-   */
-  #hashInstanceKey(serverName, env) {
-    const canonical = JSON.stringify(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)));
-    return crypto
-      .createHash('sha256')
-      .update(`${serverName}\0${canonical}`)
-      .digest('hex');
   }
 }

@@ -18,12 +18,11 @@ describe('TenantEnvResolver', () => {
   const resolver = new TenantEnvResolver();
 
   it('uses config default when header absent', () => {
-    const { env, instanceKey } = resolver.resolve(server, {
+    const { env } = resolver.resolve(server, {
       'x-grafana_api_key': 'secret',
     });
     assert.equal(env.GRAFANA_URL, 'https://default.example.com');
     assert.equal(env.GRAFANA_API_KEY, 'secret');
-    assert.ok(instanceKey.length === 64);
   });
 
   it('header overrides config default', () => {
@@ -35,17 +34,17 @@ describe('TenantEnvResolver', () => {
       'x-GRAFANA_URL': 'https://b.example.com',
       'x-GRAFANA_API_KEY': 'k1',
     });
-    assert.notEqual(a.instanceKey, b.instanceKey);
+    assert.notDeepEqual(a.env, b.env);
   });
 
-  it('hash is stable for same inputs', () => {
+  it('resolution is stable for same inputs', () => {
     const headers = {
       'x-GRAFANA_URL': 'https://x.example.com',
       'x-GRAFANA_API_KEY': 'k',
     };
     const r1 = resolver.resolve(server, headers);
     const r2 = resolver.resolve(server, headers);
-    assert.equal(r1.instanceKey, r2.instanceKey);
+    assert.deepEqual(r1.env, r2.env);
   });
 
   it('throws when required env missing', () => {

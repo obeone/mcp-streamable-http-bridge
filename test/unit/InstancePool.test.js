@@ -67,11 +67,12 @@ describe('Instance lifecycle', () => {
 
   it('closes SSE streams before invalidating the corresponding sessions', () => {
     const sessionStore = new SessionStore();
-    const session = sessionStore.create('test', 'key');
+    const session = sessionStore.create('test');
+    const key = sessionStore.get(session).instanceKey;
     const handler = new StreamableHttpHandler({ sessionStore, logger });
     let ended = false;
     handler.sseBySession.set(session, new Set([{ end() { ended = true; } }]));
-    handler.onInstanceEvicted('key');
+    handler.onInstanceEvicted(key);
     assert.equal(ended, true);
     assert.equal(sessionStore.get(session), undefined);
     assert.equal(handler.sseBySession.size, 0);
