@@ -8,6 +8,7 @@ import { McpHttpServer } from './routers/McpHttpServer.js';
 import { LoggerFactory } from './LoggerFactory.js';
 import { MetricsRegistry } from './utils/MetricsRegistry.js';
 import { resolveRuntimePaths } from './paths.js';
+import { readRuntimeOptions } from './utils/RuntimeOptions.js';
 
 /**
  * @typedef {import('./types.js').Logger} Logger
@@ -28,6 +29,7 @@ export class McpWrapperApplication {
     this.configDir = options.configDir ?? runtime.configDir;
     this.logFilePath = options.logFilePath ?? runtime.logFilePath;
     this.port = options.port ?? Number(process.env.PORT ?? 8080);
+    this.runtimeOptions = readRuntimeOptions(options.limits);
     /** @type {Logger | null} */
     this.logger = null;
     /** @type {InstancePool | null} */
@@ -63,6 +65,7 @@ export class McpWrapperApplication {
     this.pool = new InstancePool({
       logger: this.logger,
       metrics,
+      maxInstances: this.runtimeOptions.maxInstances,
       onInstanceEvicted: (instanceKey) => {
         streamableHandler?.onInstanceEvicted(instanceKey);
       },
@@ -99,8 +102,10 @@ export class McpWrapperApplication {
       clearInterval(this.evictionTimer);
       this.evictionTimer = null;
     }
-    await this.httpServer?.stop();
+    this.httpServer?.streamableHandler.close();
+    const httpStopped = this.httpServer?.stop();
     await this.pool?.closeAll();
+    await httpStopped;
     this.logger?.info('Gateway stopped');
   }
 }

@@ -47,5 +47,6 @@ export class SessionStore {
     this.sessions.delete(sessionId);
     const set = this.sessionsByInstance.get(s.instanceKey);
     set?.delete(sessionId);
+    if (set?.size === 0) this.sessionsByInstance.delete(s.instanceKey);
   }
 }

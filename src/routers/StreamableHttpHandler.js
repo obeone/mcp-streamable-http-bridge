@@ -69,7 +69,6 @@ export class StreamableHttpHandler {
 
   /** @param {string} instanceKey */
   onInstanceEvicted(instanceKey) {
-    this.sessionStore.invalidateByInstanceKey(instanceKey);
     const unsub = this.notificationUnsubs.get(instanceKey);
     if (unsub) {
       unsub();
@@ -80,6 +79,14 @@ export class StreamableHttpHandler {
         this.#closeSseForSession(sessionId);
       }
     }
+    this.sessionStore.invalidateByInstanceKey(instanceKey);
+  }
+
+  /** @returns {void} Close all streams before HTTP shutdown. */
+  close() {
+    for (const sessionId of this.sseBySession.keys()) this.#closeSseForSession(sessionId);
+    for (const unsubscribe of this.notificationUnsubs.values()) unsubscribe();
+    this.notificationUnsubs.clear();
   }
 
   async #handleGet(req, res, serverName) {
@@ -123,7 +130,7 @@ export class StreamableHttpHandler {
 
     this.#ensureNotificationBridge(session.instanceKey, instance);
 
-    req.on('close', () => {
+    res.on('close', () => {
       const set = this.sseBySession.get(sessionId);
       set?.delete(res);
       if (set && set.size === 0) {
@@ -325,7 +332,8 @@ export class StreamableHttpHandler {
         const streams = this.sseBySession.get(sessionId);
         if (!streams) continue;
         for (const stream of streams) {
-          writeSseJson(stream, msg);
+          if (stream.destroyed || stream.writableEnded) continue;
+          if (!writeSseJson(stream, msg)) stream.destroy();
         }
       }
     });

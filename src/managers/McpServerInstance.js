@@ -18,8 +18,11 @@ export class McpServerInstance {
    * @param {string} instanceKeyPrefix
    * @param {Logger} logger
    */
-  constructor(server, tenantEnv, instanceKeyPrefix, logger) {
+  constructor(server, tenantEnv, instanceKeyPrefix, logger, options = {}) {
     this.server = server;
+    this.options = options;
+    this.activeRequests = 0;
+    this.closePromise = null;
     this.tenantEnv = tenantEnv;
     this.instanceKeyPrefix = instanceKeyPrefix;
     this.logger = logger.child({ component: 'McpServerInstance', server: server.name });
@@ -54,8 +57,9 @@ export class McpServerInstance {
       return this.startPromise;
     }
 
-    this.startPromise = this.#doStart().catch((err) => {
+    this.startPromise = this.#doStart().catch(async (err) => {
       this.startPromise = null;
+      await this.close();
       throw err;
     });
     return this.startPromise;
@@ -82,46 +86,31 @@ export class McpServerInstance {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: useShell,
       windowsHide: true,
+      detached: process.platform !== 'win32',
     });
 
+    const child = this.child;
+    this.transport = new StdioJsonRpcTransport(child, this.options);
+    this.transport.on('notification', (msg, scope) => {
+      for (const listener of this.notificationListeners) listener(msg, scope);
+    });
+    this.transport.once('close', () => {
+      if (!this.dead) void this.close();
+    });
+    child.stderr.on('data', (chunk) => this.#logChildStderr(chunk));
+    child.on('error', () => {
+      this.dead = true;
+      this.logger.error('Child process error', { instanceKeyPrefix: this.instanceKeyPrefix });
+      this.transport?.dispose();
+    });
+    child.on('exit', (code, signal) => {
+      this.dead = true;
+      this.logger.info('Child process exited', { pid: child.pid, code, signal, instanceKeyPrefix: this.instanceKeyPrefix });
+      this.transport?.dispose();
+    });
     await new Promise((resolve, reject) => {
-      const child = this.child;
-      if (!child) {
-        reject(new Error('Failed to spawn MCP server process'));
-        return;
-      }
       child.once('spawn', resolve);
       child.once('error', reject);
-    });
-
-    this.transport = new StdioJsonRpcTransport(this.child);
-    this.transport.on('notification', (msg, scope) => {
-      for (const listener of this.notificationListeners) {
-        listener(msg, scope);
-      }
-    });
-
-    this.child.stderr.on('data', (chunk) => this.#logChildStderr(chunk));
-
-    this.child.on('error', (err) => {
-      if (this.dead) return;
-      this.dead = true;
-      this.logger.error(`Child process error: ${err.message}`, {
-        pid: this.child?.pid,
-        instanceKeyPrefix: this.instanceKeyPrefix,
-      });
-      this.transport?.dispose();
-    });
-
-    this.child.on('exit', (code, signal) => {
-      this.dead = true;
-      const codeText = code == null ? 'null' : String(code);
-      const signalText = signal ? `, signal ${signal}` : '';
-      this.logger.info(`Child process exited (code ${codeText}${signalText})`, {
-        pid: this.child?.pid,
-        instanceKeyPrefix: this.instanceKeyPrefix,
-      });
-      this.transport?.dispose();
     });
 
     const protocolVersion = process.env.MCP_PROTOCOL_VERSION ?? '2024-11-05';
@@ -147,6 +136,17 @@ export class McpServerInstance {
    * @param {object} message JSON-RPC request from HTTP client
    */
   async handleClientRequest(message, scope = '') {
+    this.activeRequests++;
+    try {
+      return await this.#forwardClientRequest(message, scope);
+    } finally {
+      this.activeRequests--;
+      this.touch();
+    }
+  }
+
+  /** @param {object} message Client message. @param {string} scope Session identity. @returns {Promise<object>} Response. */
+  async #forwardClientRequest(message, scope) {
     await this.start();
     if (this.dead || !this.transport) {
       throw new Error('MCP server process is not running');
@@ -188,25 +188,47 @@ export class McpServerInstance {
     return message.id === undefined || message.id === null;
   }
 
+  /** @returns {Promise<void>} Termination of the owned process group, with escalation. */
   async close() {
-    this.transport?.dispose();
+    if (this.closePromise) return this.closePromise;
+    this.dead = true;
     const child = this.child;
     this.child = null;
+    this.transport?.dispose();
     this.transport = null;
-    this.startPromise = null;
     this.notificationListeners.clear();
+    this.closePromise = this.#terminate(child);
+    return this.closePromise;
+  }
 
-    if (!child || child.killed) return;
-
-    const pid = child.pid;
-    if (process.platform === 'win32' && pid) {
+  /** @param {object | null} child Owned subprocess. @returns {Promise<void>} Process termination. */
+  async #terminate(child) {
+    if (!child?.pid) return;
+    if (process.platform === 'win32') {
       try {
-        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+        await execFileAsync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
       } catch {
-        child.kill('SIGTERM');
+        child.kill('SIGKILL');
       }
-    } else {
-      child.kill('SIGTERM');
+      return;
     }
+    const signalGroup = (signal) => {
+      try { process.kill(-child.pid, signal); } catch (error) {
+        if (error.code !== 'ESRCH') child.kill(signal);
+      }
+    };
+    if (child.exitCode !== null || child.signalCode !== null) {
+      signalGroup('SIGKILL');
+      return;
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => signalGroup('SIGKILL'), this.options.killTimeoutMs ?? 5000);
+      child.once('exit', () => {
+        clearTimeout(timer);
+        signalGroup('SIGKILL');
+        resolve();
+      });
+      signalGroup('SIGTERM');
+    });
   }
 }

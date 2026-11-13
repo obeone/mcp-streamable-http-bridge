@@ -1,124 +1,104 @@
-import { McpServerInstance } from './McpServerInstance.js';
 import { IdleEvictionPolicy } from './IdleEvictionPolicy.js';
+import { BridgeError } from '../utils/BridgeError.js';
 
-/**
- * @typedef {import('../types.js').Logger} Logger
- * @typedef {import('../utils/MetricsRegistry.js').MetricsRegistry} MetricsRegistry
- *
- * @typedef {Object} InstancePoolDeps
- * @property {IdleEvictionPolicy} [evictionPolicy]
- * @property {Logger} logger
- * @property {MetricsRegistry} [metrics]
- * @property {(instanceKey: string) => void} [onInstanceEvicted]
- */
-
+/** Bounded instance registry; credentials determine reuse until session isolation is enabled. */
 export class InstancePool {
-  /** @param {InstancePoolDeps} deps */
-  constructor({ evictionPolicy, logger, metrics, onInstanceEvicted }) {
+  /** @param {object} deps Logger, metrics, eviction policy and lifecycle callback. @returns {InstancePool} */
+  constructor({ evictionPolicy, logger, metrics, onInstanceEvicted, maxInstances = 100 }) {
     this.evictionPolicy = evictionPolicy ?? new IdleEvictionPolicy();
     this.logger = logger.child({ component: 'InstancePool' });
     this.metrics = metrics;
     this.onInstanceEvicted = onInstanceEvicted;
-
-    /** @type {Map<string, McpServerInstance>} */
+    this.maxInstances = maxInstances;
     this.instances = new Map();
-    /** @type {Map<string, Promise<McpServerInstance>>} */
     this.pending = new Map();
-    /** @type {Map<string, string>} instanceKey -> serverName */
     this.instanceServer = new Map();
+    this.closing = new Set();
+    this.closed = false;
   }
 
   /**
-   * @param {string} instanceKey
-   * @param {string} serverName
-   * @param {() => McpServerInstance} createInstance
+   * @param {string} instanceKey Instance identity.
+   * @param {string} serverName Configured server.
+   * @param {Function} createInstance Instance factory.
+   * @returns {Promise<import('./McpServerInstance.js').McpServerInstance>} Ready instance.
+   * @throws {BridgeError} If shutting down or at capacity.
    */
   async acquire(instanceKey, serverName, createInstance) {
-    const existing = this.instances.get(instanceKey);
-    if (existing && !existing.dead) {
+    if (this.closed) throw new BridgeError(503, 'Bridge is shutting down');
+    const existing = this.get(instanceKey);
+    if (existing) {
       existing.touch();
       return existing;
     }
-    if (existing?.dead) {
-      this.instances.delete(instanceKey);
-      this.instanceServer.delete(instanceKey);
+    if (this.instances.has(instanceKey)) await this.remove(instanceKey);
+    if (this.pending.has(instanceKey)) return this.pending.get(instanceKey);
+    if (this.instances.size + this.pending.size + this.closing.size >= this.maxInstances) {
+      throw new BridgeError(503, 'MCP instance limit reached');
     }
-
-    if (this.pending.has(instanceKey)) {
-      return this.pending.get(instanceKey);
-    }
-
-    const promise = (async () => {
+    const promise = Promise.resolve().then(async () => {
       const instance = createInstance();
-      await instance.start();
-      this.instances.set(instanceKey, instance);
-      this.instanceServer.set(instanceKey, serverName);
-      this.pending.delete(instanceKey);
-      this.#refreshMetrics();
-      return instance;
-    })();
-
+      try {
+        await instance.start();
+        if (this.closed) throw new BridgeError(503, 'Bridge is shutting down');
+        this.instances.set(instanceKey, instance);
+        this.instanceServer.set(instanceKey, serverName);
+        this.#refreshMetrics();
+        return instance;
+      } catch (error) {
+        await instance.close();
+        throw error;
+      }
+    }).finally(() => this.pending.delete(instanceKey));
     this.pending.set(instanceKey, promise);
     return promise;
   }
 
+  /** @param {string} instanceKey Instance identity. @returns {object | undefined} Live instance. */
   get(instanceKey) {
-    const inst = this.instances.get(instanceKey);
-    if (inst && !inst.dead) return inst;
-    return undefined;
+    const instance = this.instances.get(instanceKey);
+    return instance && !instance.dead ? instance : undefined;
   }
 
+  /** @param {string} instanceKey Instance identity. @returns {Promise<void>} Full process cleanup. */
+  async remove(instanceKey) {
+    const instance = this.instances.get(instanceKey);
+    if (!instance) return;
+    this.instances.delete(instanceKey);
+    this.instanceServer.delete(instanceKey);
+    this.onInstanceEvicted?.(instanceKey);
+    const closing = Promise.resolve().then(() => instance.close());
+    this.closing.add(closing);
+    this.#refreshMetrics();
+    try {
+      await closing;
+    } finally {
+      this.closing.delete(closing);
+    }
+  }
+
+  /** @returns {Promise<void>} Eviction of dead or inactive, unoccupied instances. */
   async evictIdle() {
     const cutoff = Date.now() - this.evictionPolicy.idleMs();
-    /** @type {string[]} */
-    const toEvict = [];
-
     for (const [key, instance] of this.instances) {
-      if (instance.lastUsedAt < cutoff || instance.dead) {
-        toEvict.push(key);
+      if (instance.dead || (!instance.activeRequests && instance.lastUsedAt < cutoff)) {
+        await this.remove(key);
       }
-    }
-
-    for (const key of toEvict) {
-      const instance = this.instances.get(key);
-      const serverName = this.instanceServer.get(key);
-      if (instance) {
-        const reasonLabel = instance.dead ? 'dead' : 'idle';
-        const pid = instance.child?.pid;
-        await instance.close();
-        this.logger.info(`Evicted ${reasonLabel} instance for server ${serverName}`, {
-          server: serverName,
-          instanceKeyPrefix: instance.instanceKeyPrefix,
-          ...(pid != null ? { pid } : {}),
-        });
-      }
-      this.instances.delete(key);
-      this.instanceServer.delete(key);
-      this.onInstanceEvicted?.(key);
-    }
-
-    if (toEvict.length) {
-      this.#refreshMetrics();
     }
   }
 
+  /** @returns {Promise<void>} Cleanup including starts already in progress. */
   async closeAll() {
-    for (const instance of this.instances.values()) {
-      await instance.close();
-    }
-    this.instances.clear();
-    this.instanceServer.clear();
-    this.pending.clear();
-    this.#refreshMetrics();
+    this.closed = true;
+    await Promise.allSettled([...this.pending.values()]);
+    await Promise.all([...this.instances.keys()].map((key) => this.remove(key)));
+    await Promise.allSettled([...this.closing]);
   }
 
+  /** @returns {void} Update aggregate process counts without tenant labels. */
   #refreshMetrics() {
-    if (!this.metrics) return;
-    /** @type {Record<string, number>} */
-    const counts = {};
-    for (const serverName of this.instanceServer.values()) {
-      counts[serverName] = (counts[serverName] ?? 0) + 1;
-    }
-    this.metrics.setInstancesActive(counts);
+    const counts = Object.create(null);
+    for (const name of this.instanceServer.values()) counts[name] = (counts[name] ?? 0) + 1;
+    this.metrics?.setInstancesActive(counts);
   }
 }
