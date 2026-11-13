@@ -8,6 +8,7 @@ describe('TenantEnvResolver', () => {
   const server = ServerDefinition.fromConfigEntry('grafana', {
     command: 'npx',
     args: [],
+    headerEnv: ['GRAFANA_URL', 'GRAFANA_API_KEY'],
     env: {
       GRAFANA_URL: 'https://default.example.com',
       GRAFANA_API_KEY: '',

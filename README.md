@@ -88,7 +88,7 @@ Each loaded file uses the **gateway** schema (stdio spawn line):
 ```
 
 - **`command` / `args`**: spawn line for the MCP server (stdio).
-- **`env`**: keys injected into the child process. Values may be defaults in JSON and/or overridden by headers (see below).
+- **`env`**: keys injected into the child process. Nonempty values are fixed administrator settings. Empty values require headers. Use `headerEnv` to explicitly allow overrides of selected nonempty defaults.
 
 Every key listed under **`env`** participates in **tenant identity** (hash) and in the subprocess environment.
 
@@ -150,7 +150,7 @@ Header names are **case-insensitive**. Examples:
 
 **Instance key:** `sha256(serverName + canonical resolved env)` — same server + same env → same subprocess; any difference → a new subprocess.
 
-Do not log header values or full instance keys; use structured logs with a short hash prefix for support.
+Child processes inherit only essential system variables plus explicitly configured values. Child stderr content is omitted from bridge logs because it can contain credentials. Do not log header values or full instance keys; use structured logs with a short hash prefix for support.
 
 Stdio children use **Content-Length** framed JSON-RPC on stdin/stdout (same as the official MCP SDK).
 
