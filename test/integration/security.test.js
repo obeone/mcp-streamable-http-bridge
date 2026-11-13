@@ -104,3 +104,27 @@ describe('HTTP security boundaries', () => {
     } finally { await bridge.stop(); }
   });
 });
+
+it('keeps SSE subscribed until instance eviction, then closes the stream', async () => {
+  const bridge = await startBridge({ maxSseStreamsPerSession: 1 });
+  const controller = new AbortController();
+  try {
+    const session = await initialize(bridge);
+    const headers = { 'mcp-session-id': session, Accept: 'text/event-stream' };
+    const response = await fetch(bridge.url, { headers, signal: controller.signal });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    assert.equal((await reader.read()).done, false);
+    const extra = await fetch(bridge.url, { headers });
+    assert.equal(extra.status, 429);
+    assert.equal(bridge.handler.sseBySession.get(session).size, 1);
+    const key = bridge.sessionStore.get(session).instanceKey;
+    await bridge.pool.remove(key);
+    assert.equal((await reader.read()).done, true);
+    assert.equal(bridge.handler.sseBySession.size, 0);
+    assert.equal(bridge.sessionStore.get(session), undefined);
+  } finally {
+    controller.abort();
+    await bridge.stop();
+  }
+});

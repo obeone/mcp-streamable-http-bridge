@@ -48,12 +48,20 @@ export class McpHttpServer {
     });
   }
 
+  /** @returns {Promise<void>} Bounded HTTP shutdown, including lingering sockets. */
   async stop() {
-    if (!this.server) return;
-    await new Promise((resolve, reject) => {
-      this.server.close((err) => (err ? reject(err) : resolve()));
-    });
+    const server = this.server;
+    if (!server) return;
     this.server = null;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => server.closeAllConnections(), 5000);
+      server.close((error) => {
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      });
+      server.closeIdleConnections();
+    });
   }
 
   /**
