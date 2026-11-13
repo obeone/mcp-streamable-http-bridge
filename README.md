@@ -11,7 +11,7 @@ This project:
 - Loads MCP server definitions from a **config folder** using the same shape as Cursor **`mcp.json`** (`mcpServers`).
 - Accepts **HTTP** requests and forwards them to the correct **stdio** child process.
 - Maps **`x-<ENV_NAME>`** request headers to process environment variables declared under each server’s `env` block.
-- Derives a **stable hash** from the server name plus resolved `env` values to reuse one subprocess per tenant.
+- Creates a **dedicated subprocess for each HTTP session**. Matching credentials never cause two sessions to share a process.
 - **Evicts** subprocesses after a configurable idle period (global setting).
 - Ships with **Node.js**, **npx**, **uv**, and **python3** in the container image for common MCP launch patterns.
 - Logs with **Winston** (console + size-rotated file) and exposes **Prometheus** metrics.
@@ -90,7 +90,7 @@ Each loaded file uses the **gateway** schema (stdio spawn line):
 - **`command` / `args`**: spawn line for the MCP server (stdio).
 - **`env`**: keys injected into the child process. Nonempty values are fixed administrator settings. Empty values require headers. Use `headerEnv` to explicitly allow overrides of selected nonempty defaults.
 
-Every key listed under **`env`** participates in **tenant identity** (hash) and in the subprocess environment.
+The resolved **`env`** is fixed for the lifetime of the session. Session identity is generated independently of credentials.
 
 ### Client config (Streamable HTTP)
 
@@ -120,7 +120,8 @@ The wrapper implements **MCP Streamable HTTP** on `/mcp/{serverName}`:
 
 1. **First request** — `POST` with `method: "initialize"`, tenant **`x-*` headers**, and JSON-RPC body. Response includes **`mcp-session-id`** header.
 2. **Later requests** — `POST` with the same **`mcp-session-id`** and one JSON-RPC message per request (no tenant headers required if session is valid).
-3. **Server → client streaming** — `GET` with `Accept: text/event-stream` and **`mcp-session-id`** to receive MCP notifications over SSE.
+3. **Server → client streaming** — `GET` with `Accept: text/event-stream` and **`mcp-session-id`** to receive notifications from that session’s subprocess.
+4. **Close**: `DELETE` with the same session ID and owner identity terminates only that subprocess and its SSE streams.
 
 | Path | Method | Purpose |
 |------|--------|---------|
@@ -128,6 +129,7 @@ The wrapper implements **MCP Streamable HTTP** on `/mcp/{serverName}`:
 | `/catalog.md` | GET | Raw Markdown catalog |
 | `/mcp/{serverName}` | POST | Client → server MCP messages |
 | `/mcp/{serverName}` | GET | SSE stream (requires session header) |
+| `/mcp/{serverName}` | DELETE | Close a session and its subprocess |
 | `/health` | GET | Liveness |
 | `/metrics` | GET | Prometheus scrape |
 
@@ -148,7 +150,7 @@ Header names are **case-insensitive**. Examples:
 
 **Resolution order:** only keys in `headerEnv` accept header overrides. By default this list contains the empty `env` entries. Nonempty values stay fixed unless explicitly listed, for example `"headerEnv": ["GRAFANA_API_KEY"]`. Missing required values and attempts to change fixed settings are rejected before spawning. Runtime-loading variables such as `NODE_OPTIONS`, `PATH`, and `LD_PRELOAD` cannot be header-controlled.
 
-**Instance key:** `sha256(serverName + canonical resolved env)` — same server + same env → same subprocess; any difference → a new subprocess.
+**Session affinity:** each successful `initialize` returns a new `Mcp-Session-Id` bound to its own subprocess. Every subsequent POST and GET with that ID reaches the same process, including after an SSE connection closes. Equal headers across sessions still produce different subprocesses. See [session lifecycle](docs/sessions.md).
 
 Child processes inherit only essential system variables plus explicitly configured values. Child stderr content is omitted from bridge logs because it can contain credentials. Do not log header values or full instance keys; use structured logs with a short hash prefix for support.
 
@@ -156,7 +158,7 @@ Stdio children use newline-delimited JSON-RPC on stdin/stdout. The bridge assign
 
 ## Security and resource limits
 
-Deploy behind an authenticating reverse proxy and prevent direct access to the bridge. Set `MCP_WRAPPER_TRUSTED_USER_HEADER` to the verified identity header supplied by that proxy. The proxy must strip client-supplied copies before setting it. Sessions bind to this identity on every POST and GET. Without that setting, an incoming `Authorization` header is hashed and bound to the session; if neither is present, possession of the session ID is the access boundary. The bridge itself does not validate bearer tokens.
+Deploy behind an authenticating reverse proxy and prevent direct access to the bridge. Set `MCP_WRAPPER_TRUSTED_USER_HEADER` to the verified identity header supplied by that proxy. The proxy must strip client-supplied copies before setting it. Sessions bind to this identity on every POST, GET and DELETE. Without that setting, an incoming `Authorization` header is hashed and bound to the session; if neither is present, possession of the session ID is the access boundary. The bridge itself does not validate bearer tokens.
 
 Protect the catalog, health, and metrics routes at the reverse proxy too. Shared filesystem permissions remain a deployment concern. No prompt-injection filtering is provided. See [security and deployment](docs/security.md) for limits and migration details.
 
@@ -167,7 +169,7 @@ Protect the catalog, health, and metrics routes at the reverse proxy too. Shared
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP listen port |
-| `MCP_WRAPPER_IDLE_MINUTES` | `15` | Idle time before stopping a tenant subprocess |
+| `MCP_WRAPPER_IDLE_MINUTES` | `15` | Idle time before stopping a session subprocess; `0` disables idle expiry |
 | `MCP_PROTOCOL_VERSION` | `2024-11-05` | MCP protocol version sent to stdio servers on spawn |
 | `PUBLIC_BASE_URL` | _(empty)_ | Public base URL for links in the `GET /` Markdown catalog (e.g. `https://mcp.example.com`) |
 | `MCP_WRAPPER_TRUSTED_USER_HEADER` | _(empty)_ | Verified identity header supplied by the authenticating reverse proxy |
@@ -191,7 +193,7 @@ Protect the catalog, health, and metrics routes at the reverse proxy too. Shared
 
 ## Metrics (Prometheus)
 
-Aggregated metrics avoid high-cardinality labels (no full tenant hash on time series). Typical series:
+Aggregated metrics avoid high-cardinality labels (no session IDs or instance keys on time series). Typical series:
 
 - **`mcp_servers_configured`** — count after config load
 - **`mcp_instances_active{server}`** — running subprocesses per configured server
