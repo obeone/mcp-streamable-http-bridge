@@ -2,6 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { McpWrapperApplication } from '../../src/McpWrapperApplication.js';
 
@@ -15,8 +16,7 @@ describe('Streamable HTTP integration', () => {
   let configDir;
 
   before(async () => {
-    configDir = path.join(projectRoot, 'test/fixtures/config');
-    await fs.mkdir(configDir, { recursive: true });
+    configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-bridge-test-'));
     await fs.writeFile(
       path.join(configDir, 'mcp.json'),
       JSON.stringify({
@@ -31,18 +31,19 @@ describe('Streamable HTTP integration', () => {
       })
     );
 
-    const port = 18080 + Math.floor(Math.random() * 1000);
+    const port = 0;
     app = new McpWrapperApplication({
       configDir,
       port,
       logFilePath: path.join(projectRoot, 'logs/test.log'),
     });
     await app.start();
-    baseUrl = `http://127.0.0.1:${port}`;
+    baseUrl = `http://127.0.0.1:${app.httpServer.server.address().port}`;
   });
 
   after(async () => {
     await app.stop();
+    await fs.rm(configDir, { recursive: true, force: true });
   });
 
   it('GET / returns HTML catalog for browsers', async () => {
