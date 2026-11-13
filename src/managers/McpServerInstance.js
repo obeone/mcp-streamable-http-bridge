@@ -118,8 +118,10 @@ export class McpServerInstance {
       method: 'initialize',
       params: {
         protocolVersion,
-        capabilities: {},
         clientInfo: { name: 'mcp-streamable-http-bridge', version: '1.0.0' },
+        ...this.options.initializeParams,
+        // Server-initiated requests are not yet bridged back to the HTTP client.
+        capabilities: {},
       },
     });
 
@@ -160,6 +162,8 @@ export class McpServerInstance {
         result: this.initializeResult,
       };
     }
+
+    if (message.method === 'notifications/initialized') return { notification: true };
 
     if (this.#isClientNotification(message)) {
       this.transport.notify({

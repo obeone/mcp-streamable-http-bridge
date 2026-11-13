@@ -5,6 +5,9 @@
 import process from 'node:process';
 
 let buffer = '';
+let counter = 0;
+let initializeParams;
+let initializedNotifications = 0;
 
 process.stdin.on('data', (chunk) => {
   buffer += chunk.toString('utf8');
@@ -31,6 +34,11 @@ function writeMessage(msg) {
 
 function handleMessage(msg) {
   if (msg.method === 'initialize') {
+    initializeParams = msg.params;
+    if (process.env.MOCK_TOKEN === 'fail-initialize') {
+      writeMessage({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'private initialization detail' } });
+      return;
+    }
     writeMessage({
       jsonrpc: '2.0',
       id: msg.id,
@@ -62,15 +70,18 @@ function handleMessage(msg) {
 
   if (msg.method === 'tools/call') {
     const args = msg.params?.arguments ?? {};
+    if (args.increment) counter++;
+    if (args.notify) writeMessage({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: args.notify } });
     if (args.logSecret) process.stderr.write(`Credential: ${process.env.MOCK_TOKEN}\n`);
     setTimeout(() => writeMessage({
       jsonrpc: '2.0', id: msg.id,
-      result: { pid: process.pid, token: process.env.MOCK_TOKEN, parentSecret: process.env.BRIDGE_TEST_SECRET, echo: args.echo },
+      result: { pid: process.pid, token: process.env.MOCK_TOKEN, parentSecret: process.env.BRIDGE_TEST_SECRET, echo: args.echo, counter, initializedNotifications, clientName: initializeParams?.clientInfo?.name, capabilities: initializeParams?.capabilities },
     }), args.delayMs ?? 0);
     return;
   }
 
   if (msg.method === 'notifications/initialized') {
+    initializedNotifications++;
     return;
   }
 

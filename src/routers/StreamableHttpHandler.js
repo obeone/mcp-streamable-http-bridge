@@ -61,6 +61,7 @@ export class StreamableHttpHandler {
       this.#requestOwner(req);
       if (req.method === 'GET') return await this.#handleGet(req, res, serverName, server);
       if (req.method === 'POST') return await this.#handlePost(req, res, serverName, server);
+      if (req.method === 'DELETE') return await this.#handleDelete(req, res, serverName, server);
       this.#json(res, 405, { error: 'Method not allowed' });
       this.metrics.recordHttpRequest('/mcp', 405);
     } catch (error) {
@@ -94,6 +95,29 @@ export class StreamableHttpHandler {
     this.notificationUnsubs.clear();
   }
 
+  /**
+   * @param {IncomingMessage} req Session termination request.
+   * @param {ServerResponse} res HTTP response.
+   * @param {string} serverName Target server.
+   * @param {object} server Server definition.
+   * @returns {Promise<void>} Termination of this session's process and streams.
+   * @throws {BridgeError} If the session is missing, expired, or owned by another caller.
+   */
+  async #handleDelete(req, res, serverName, server) {
+    const sessionId = this.#getSessionId(req);
+    const session = sessionId && this.sessionStore.get(sessionId);
+    if (!session || session.serverName !== serverName) throw new BridgeError(404, 'Invalid or expired session');
+    if (session.owner !== this.#requestOwner(req)) throw new BridgeError(403, 'Session owner mismatch');
+    const instance = this.pool.get(session.instanceKey);
+    if (instance) this.#authorizeSession(req, session, server, instance);
+    await this.pool.remove(session.instanceKey);
+    this.#closeSseForSession(sessionId);
+    this.sessionStore.delete(sessionId);
+    res.writeHead(204);
+    res.end();
+    this.metrics.recordHttpRequest('/mcp', 204);
+  }
+
   async #handleGet(req, res, serverName, server) {
     const accept = String(req.headers.accept ?? '');
     if (!accept.includes('text/event-stream')) {
@@ -116,8 +140,11 @@ export class StreamableHttpHandler {
       return;
     }
 
+    if (session.owner !== this.#requestOwner(req)) throw new BridgeError(403, 'Session owner mismatch');
     const instance = this.pool.get(session.instanceKey);
     if (!instance) {
+      await this.pool.remove(session.instanceKey);
+      this.#closeSseForSession(sessionId);
       this.sessionStore.delete(sessionId);
       this.#json(res, 404, { error: 'Session instance no longer active' });
       this.metrics.recordHttpRequest('/mcp', 404);
@@ -205,8 +232,11 @@ export class StreamableHttpHandler {
         this.metrics.recordHttpRequest('/mcp', 404);
         return;
       }
+      if (session.owner !== this.#requestOwner(req)) throw new BridgeError(403, 'Session owner mismatch');
       instance = this.pool.get(session.instanceKey);
       if (!instance) {
+        await this.pool.remove(session.instanceKey);
+        this.#closeSseForSession(sessionId);
         this.sessionStore.delete(sessionId);
         this.#json(res, 404, { error: 'Session instance no longer active' });
         this.metrics.recordHttpRequest('/mcp', 404);
@@ -233,11 +263,13 @@ export class StreamableHttpHandler {
         return;
       }
 
-      const { env, instanceKey, instanceKeyPrefix } = resolved;
-      sessionId = this.sessionStore.create(serverName, instanceKey, this.#requestOwner(req));
+      const { env } = resolved;
+      sessionId = this.sessionStore.create(serverName, this.#requestOwner(req));
+      const { instanceKey } = this.sessionStore.get(sessionId);
+      const instanceKeyPrefix = instanceKey.slice(0, 8);
       try {
         instance = await this.pool.acquire(instanceKey, serverName, () => {
-          return new McpServerInstance(server, env, instanceKeyPrefix, this.logger, this.options);
+          return new McpServerInstance(server, env, instanceKeyPrefix, this.logger, { ...this.options, initializeParams: rpc.params });
         });
       } catch (error) {
         this.sessionStore.delete(sessionId);
