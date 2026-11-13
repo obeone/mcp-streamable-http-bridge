@@ -43,3 +43,14 @@ describe('McpCatalogMarkdown', () => {
     assert.match(md, /http:\/\/localhost:8080\/mcp\/my_postgres_db/);
   });
 });
+
+it('never embeds configured values or credential-bearing command arguments in the catalog', () => {
+  const registry = new ServerRegistry([ServerDefinition.fromConfigEntry('mock', {
+    command: 'node', args: ['--password', 'argument-secret'], env: { BUILD_ID: 'opaque-secret', API_TOKEN: '' },
+  })]);
+  const body = new McpCatalogMarkdown().generate(registry, { hostHeader: 'bad`<script>alert(1)</script>' });
+  assert.ok(!body.includes('argument-secret'));
+  assert.ok(!body.includes('opaque-secret'));
+  assert.ok(!body.includes('<script>'));
+  assert.ok(body.includes('Fixed administrator value'));
+});
