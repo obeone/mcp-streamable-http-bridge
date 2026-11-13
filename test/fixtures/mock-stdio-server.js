@@ -60,6 +60,16 @@ function handleMessage(msg) {
     return;
   }
 
+  if (msg.method === 'tools/call') {
+    const args = msg.params?.arguments ?? {};
+    if (args.logSecret) process.stderr.write(`Credential: ${process.env.MOCK_TOKEN}\n`);
+    setTimeout(() => writeMessage({
+      jsonrpc: '2.0', id: msg.id,
+      result: { pid: process.pid, token: process.env.MOCK_TOKEN, parentSecret: process.env.BRIDGE_TEST_SECRET, echo: args.echo },
+    }), args.delayMs ?? 0);
+    return;
+  }
+
   if (msg.method === 'notifications/initialized') {
     return;
   }

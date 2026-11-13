@@ -1,8 +1,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { StdioJsonRpcTransport } from './StdioJsonRpcTransport.js';
-import { getRequestLogContext } from '../utils/RequestLogContext.js';
-import { shouldDemoteChildStderrToDebug } from '../utils/logFormat.js';
+import { createChildEnvironment } from '../utils/ChildEnvironment.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,61 +61,22 @@ export class McpServerInstance {
     return this.startPromise;
   }
 
-  /** @param {Buffer | string} chunk */
+  /**
+   * @param {Buffer | string} chunk Untrusted diagnostic output.
+   * @returns {void}
+   */
   #logChildStderr(chunk) {
-    const text = chunk.toString('utf8');
-    for (const rawLine of text.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line) continue;
-
-      const childRaw = line.length > 2000 ? `${line.slice(0, 2000)}…` : line;
-      let level = 'info';
-      let childMessage = childRaw;
-
-      try {
-        const parsed = JSON.parse(line);
-        if (typeof parsed.level === 'string') {
-          const normalized = parsed.level.toLowerCase();
-          if (normalized === 'warning') {
-            level = 'warn';
-          } else if (['error', 'warn', 'info', 'debug'].includes(normalized)) {
-            level = normalized;
-          }
-        }
-        if (typeof parsed.message === 'string' && parsed.message.trim()) {
-          childMessage = parsed.message;
-        }
-      } catch {
-        // Plain-text stderr from the child (not JSON).
-      }
-
-      if (shouldDemoteChildStderrToDebug(childMessage)) {
-        level = 'debug';
-      }
-
-      const requestCtx = getRequestLogContext();
-      const logMeta = {
-        pid: this.child?.pid,
-        instanceKeyPrefix: this.instanceKeyPrefix,
-        ...(requestCtx?.sessionId ? { sessionId: requestCtx.sessionId } : {}),
-      };
-
-      const log =
-        level === 'error'
-          ? this.logger.error.bind(this.logger)
-          : level === 'warn'
-            ? this.logger.warn.bind(this.logger)
-            : level === 'debug'
-              ? this.logger.debug.bind(this.logger)
-              : this.logger.info.bind(this.logger);
-
-      log(`Child stderr: ${childMessage}`, logMeta);
-    }
+    // Child diagnostics may contain arbitrary secrets or terminal control codes.
+    this.logger.debug('Child stderr received (content omitted)', {
+      pid: this.child?.pid,
+      instanceKeyPrefix: this.instanceKeyPrefix,
+      bytes: Buffer.byteLength(chunk),
+    });
   }
 
   async #doStart() {
-    const mergedEnv = { ...process.env, ...this.tenantEnv };
-    const useShell = process.platform === 'win32';
+    const mergedEnv = createChildEnvironment(this.tenantEnv);
+    const useShell = false;
     this.child = spawn(this.server.command, this.server.args, {
       env: mergedEnv,
       stdio: ['pipe', 'pipe', 'pipe'],

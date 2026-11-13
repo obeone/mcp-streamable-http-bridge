@@ -25,6 +25,7 @@ describe('Streamable HTTP integration', () => {
             command: 'node',
             args: [path.join(projectRoot, 'test/fixtures/mock-stdio-server.js')],
             env: { MOCK_TOKEN: 'default-token' },
+            headerEnv: ['MOCK_TOKEN'],
           },
         },
       })
