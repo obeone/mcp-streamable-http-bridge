@@ -135,9 +135,9 @@ export class McpServerInstance {
     });
 
     this.transport = new StdioJsonRpcTransport(this.child);
-    this.transport.on('notification', (msg) => {
+    this.transport.on('notification', (msg, scope) => {
       for (const listener of this.notificationListeners) {
-        listener(msg);
+        listener(msg, scope);
       }
     });
 
@@ -186,7 +186,7 @@ export class McpServerInstance {
   /**
    * @param {object} message JSON-RPC request from HTTP client
    */
-  async handleClientRequest(message) {
+  async handleClientRequest(message, scope = '') {
     await this.start();
     if (this.dead || !this.transport) {
       throw new Error('MCP server process is not running');
@@ -205,7 +205,7 @@ export class McpServerInstance {
       this.transport.notify({
         method: message.method,
         params: message.params,
-      });
+      }, scope);
       return { notification: true };
     }
 
@@ -213,7 +213,7 @@ export class McpServerInstance {
       method: message.method,
       params: message.params,
       id: message.id,
-    });
+    }, scope);
     return response;
   }
 
